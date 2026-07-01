@@ -144,7 +144,7 @@ export default async () => {
           break
         }
 
-        case "permission.updated": {
+        case "permission.asked": {
           const perm = p || {}
           const sid = safeStr(perm.sessionID)
           if (!sid) break

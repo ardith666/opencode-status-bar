@@ -49,7 +49,6 @@ struct SBConfig: Codable {
     struct SoundConfig: Codable {
         var path: String?
         var minDuration: Double?
-        var notifEnabled: Bool?
     }
     struct DisplayConfig: Codable {
         var showTimer: Bool?
@@ -61,9 +60,9 @@ struct SBConfig: Codable {
         var enabled: Bool?
         var interval: Double?
         var duration: Double?
-        var soundPath: String?
+        var audioOnly: Bool?
         enum CodingKeys: String, CodingKey {
-            case enabled, interval, duration, soundPath
+            case enabled, interval, duration, audioOnly
         }
     }
 }
@@ -341,6 +340,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var currentColorKey: String?
     var cachedCustomIcon: NSImage?
     var cachedCustomIconPath: String?
+    var aboutPanel: NSPanel?
 
     var configPath: String {
         (stateDir as NSString).deletingLastPathComponent + "/config.json"
@@ -486,10 +486,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var animStyle = AnimStyle.block
     var showTimer = false
     var playCompletionSound = false
-    var playNotifSound: Bool = {
-        let d = UserDefaults.standard
-        return d.object(forKey: "notifSound") as? Bool ?? true
-    }()
+    var playNotifSound = true
     var soundMinDuration: Double = {
         let v = UserDefaults.standard.double(forKey: "soundMinDuration")
         return v > 0 ? v : 60
@@ -497,6 +494,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var audioPlayer: AVAudioPlayer?
     var notifPlayer: AVAudioPlayer?
     var countPlayer: AVAudioPlayer?
+    var breakAudioPlayer: AVAudioPlayer?
 
     // MARK: Break Time
     let breakIcons = ["☕️", "🧘", "👀", "🌿", "🪴"]
@@ -512,6 +510,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let v = UserDefaults.standard.double(forKey: "breakDuration")
         return v > 0 ? v : 10
     }()
+    var breakAudioOnly = UserDefaults.standard.object(forKey: "breakAudioOnly") as? Bool ?? false
     var breakTimer: Timer?
     var breakCountdown = 0
     var breakActive = false
@@ -628,18 +627,18 @@ final class StatusController: NSObject, NSMenuDelegate {
         let d = UserDefaults.standard
         if d.object(forKey: "showTimer") != nil { showTimer = d.bool(forKey: "showTimer") }
         if d.object(forKey: "completionSound") != nil { playCompletionSound = d.bool(forKey: "completionSound") }
-        if d.object(forKey: "notifSound") != nil { playNotifSound = d.bool(forKey: "notifSound") }
         if d.object(forKey: "breakEnabled") != nil { breakEnabled = d.bool(forKey: "breakEnabled") }
         if d.object(forKey: "breakInterval") != nil { breakInterval = max(d.double(forKey: "breakInterval"), 1) }
         if d.object(forKey: "breakDuration") != nil { breakDuration = max(d.double(forKey: "breakDuration"), 1) }
+        if d.object(forKey: "breakAudioOnly") != nil { breakAudioOnly = d.bool(forKey: "breakAudioOnly") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
         // config overrides UserDefaults
         if let v = loadedConfig.display?.showTimer { showTimer = v }
         if let v = loadedConfig.display?.hideIdleAfter { d.set(v, forKey: "hideIdleAfter") }
-        if let v = loadedConfig.sound?.notifEnabled { playNotifSound = v }
         if let v = loadedConfig.breakTime?.enabled { breakEnabled = v }
         if let v = loadedConfig.breakTime?.interval { breakInterval = v }
         if let v = loadedConfig.breakTime?.duration { breakDuration = v }
+        if let v = loadedConfig.breakTime?.audioOnly { breakAudioOnly = v }
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
@@ -662,6 +661,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let src = pluginSrc else { return }
         try? fm.createDirectory(atPath: pluginDir, withIntermediateDirectories: true)
         if !fm.fileExists(atPath: pluginDst) || fm.contentsEqual(atPath: src, andPath: pluginDst) == false {
+            try? fm.removeItem(atPath: pluginDst)
             try? fm.copyItem(atPath: src, toPath: pluginDst)
         }
     }
@@ -715,8 +715,10 @@ final class StatusController: NSObject, NSMenuDelegate {
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let tag = obj["tag_name"] as? String else { return }
             let ver = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-            UserDefaults.standard.set(ver, forKey: "latestVersion")
-            UserDefaults.standard.set(now, forKey: "lastUpdateCheck")
+            DispatchQueue.main.async {
+                UserDefaults.standard.set(ver, forKey: "latestVersion")
+                UserDefaults.standard.set(now, forKey: "lastUpdateCheck")
+            }
         }.resume()
     }
 
@@ -866,20 +868,12 @@ final class StatusController: NSObject, NSMenuDelegate {
             menu.addItem(testSoundItem)
         }
 
-        menu.addItem(toggleRow(title: "Notification sound", isOn: playNotifSound) { [weak self] on in
-            guard let self = self else { return }
-            self.playNotifSound = on
-            UserDefaults.standard.set(on, forKey: "notifSound")
-            if self.loadedConfig.sound == nil { self.loadedConfig.sound = SBConfig.SoundConfig() }
-            self.loadedConfig.sound?.notifEnabled = on
-            self.saveConfig()
-            if let menu = self.statusItem.menu { self.populateMenu(menu) }
-        })
-
-        // --- Break Time
+        // Break Time submenu
         let bi = Int(breakInterval); let bIntervalLabel = bi >= 3600 ? "\(bi / 3600)h \((bi % 3600) / 60)m" : bi >= 60 ? "\(bi / 60)m" : "\(bi)s"
         let bDurLabel = "\(Int(breakDuration))s"
-        menu.addItem(toggleRow(title: "Break Time", isOn: breakEnabled) { [weak self] on in
+        let breakParent = NSMenuItem(title: "Break Time", action: nil, keyEquivalent: "")
+        let breakSub = NSMenu()
+        breakSub.addItem(toggleRow(title: "Enabled", isOn: breakEnabled) { [weak self] on in
             guard let self = self else { return }
             self.breakEnabled = on
             UserDefaults.standard.set(on, forKey: "breakEnabled")
@@ -887,27 +881,64 @@ final class StatusController: NSObject, NSMenuDelegate {
             self.loadedConfig.breakTime?.enabled = on
             self.saveConfig()
             if on { self.startBreakTimer() } else { self.cancelBreakTimer() }
-            if let menu = self.statusItem.menu { self.populateMenu(menu) }
         })
-        if breakEnabled {
-            let breakIntItem = NSMenuItem(title: "Interval: \(bIntervalLabel)", action: nil, keyEquivalent: "")
-            let breakIntSub = NSMenu()
-            for (name, val) in [("15m", 900.0), ("30m", 1800.0), ("45m", 2700.0), ("60m", 3600.0)] {
-                let it = NSMenuItem(title: name, action: #selector(chooseBreakInterval(_:)), keyEquivalent: "")
-                it.target = self
-                it.representedObject = val
-                it.state = breakInterval == val ? NSControl.StateValue.on : NSControl.StateValue.off
-                breakIntSub.addItem(it)
-            }
-            let customInt = NSMenuItem(title: "Custom…", action: #selector(chooseCustomInterval), keyEquivalent: "")
-            customInt.target = self
-            customInt.indentationLevel = 1
-            breakIntSub.addItem(NSMenuItem.separator())
-            breakIntSub.addItem(customInt)
-            breakIntItem.submenu = breakIntSub
-            breakIntItem.indentationLevel = 1
-            menu.addItem(breakIntItem)
+        breakSub.addItem(toggleRow(title: "Sound Only", isOn: breakAudioOnly) { [weak self] on in
+            guard let self = self else { return }
+            self.breakAudioOnly = on
+            UserDefaults.standard.set(on, forKey: "breakAudioOnly")
+            if self.loadedConfig.breakTime == nil { self.loadedConfig.breakTime = SBConfig.BreakConfig() }
+            self.loadedConfig.breakTime?.audioOnly = on
+            self.saveConfig()
+            if self.breakEnabled { self.startBreakTimer() }
 
+            if on {
+                while breakSub.numberOfItems > 3 {
+                    breakSub.removeItem(at: breakSub.numberOfItems - 1)
+                }
+            } else {
+                let bDurLabel = "\(Int(self.breakDuration))s"
+                let breakDurItem = NSMenuItem(title: "Duration: \(bDurLabel)", action: nil, keyEquivalent: "")
+                let breakDurSub = NSMenu()
+                for (name, val) in [("5s", 5.0), ("10s", 10.0), ("15s", 15.0), ("30s", 30.0)] {
+                    let it = NSMenuItem(title: name, action: #selector(self.chooseBreakDuration(_:)), keyEquivalent: "")
+                    it.target = self
+                    it.representedObject = val
+                    it.state = self.breakDuration == val ? NSControl.StateValue.on : NSControl.StateValue.off
+                    breakDurSub.addItem(it)
+                }
+                breakDurItem.submenu = breakDurSub
+                breakSub.addItem(breakDurItem)
+
+                let breakLabelItem = NSMenuItem(title: "Customize Labels…", action: nil, keyEquivalent: "")
+                let breakLabelSub = NSMenu()
+                for (key, display) in [("breakTitle", "Title"), ("breakMessage", "Message")] {
+                    let cur = self.configLabel(key) ?? self.defaultLabel(for: key)
+                    let it = NSMenuItem(title: "\(display): \"\(cur)\"", action: #selector(self.editBreakLabel(_:)), keyEquivalent: "")
+                    it.target = self
+                    it.representedObject = key
+                    breakLabelSub.addItem(it)
+                }
+                breakLabelItem.submenu = breakLabelSub
+                breakSub.addItem(breakLabelItem)
+            }
+        })
+        let breakIntItem = NSMenuItem(title: "Interval: \(bIntervalLabel)", action: nil, keyEquivalent: "")
+        let breakIntSub = NSMenu()
+        for (name, val) in [("15m", 900.0), ("30m", 1800.0), ("45m", 2700.0), ("60m", 3600.0)] {
+            let it = NSMenuItem(title: name, action: #selector(chooseBreakInterval(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = val
+            it.state = breakInterval == val ? NSControl.StateValue.on : NSControl.StateValue.off
+            breakIntSub.addItem(it)
+        }
+        let customInt = NSMenuItem(title: "Custom…", action: #selector(chooseCustomInterval), keyEquivalent: "")
+        customInt.target = self
+        breakIntSub.addItem(NSMenuItem.separator())
+        breakIntSub.addItem(customInt)
+        breakIntItem.submenu = breakIntSub
+        breakSub.addItem(breakIntItem)
+
+        if !breakAudioOnly {
             let breakDurItem = NSMenuItem(title: "Duration: \(bDurLabel)", action: nil, keyEquivalent: "")
             let breakDurSub = NSMenu()
             for (name, val) in [("5s", 5.0), ("10s", 10.0), ("15s", 15.0), ("30s", 30.0)] {
@@ -918,8 +949,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                 breakDurSub.addItem(it)
             }
             breakDurItem.submenu = breakDurSub
-            breakDurItem.indentationLevel = 1
-            menu.addItem(breakDurItem)
+            breakSub.addItem(breakDurItem)
 
             let breakLabelItem = NSMenuItem(title: "Customize Labels…", action: nil, keyEquivalent: "")
             let breakLabelSub = NSMenu()
@@ -931,9 +961,11 @@ final class StatusController: NSObject, NSMenuDelegate {
                 breakLabelSub.addItem(it)
             }
             breakLabelItem.submenu = breakLabelSub
-            breakLabelItem.indentationLevel = 1
-            menu.addItem(breakLabelItem)
+            breakSub.addItem(breakLabelItem)
         }
+
+        breakParent.submenu = breakSub
+        menu.addItem(breakParent)
 
         let animParent = NSMenuItem(title: "Animation Style", action: nil, keyEquivalent: "")
         let animSub = NSMenu()
@@ -962,17 +994,25 @@ final class StatusController: NSObject, NSMenuDelegate {
         hideParent.submenu = hideSub
         menu.addItem(hideParent)
 
-        // --- Customize
+        // Launch at Login
+        let launchItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        launchItem.target = self
+        launchItem.state = launchAtLoginEnabled() ? .on : .off
+        menu.addItem(launchItem)
+
         menu.addItem(.separator())
-        menu.addItem(header("Customize"))
+
+        // Customize submenu
+        let customizeParent = NSMenuItem(title: "Customize", action: nil, keyEquivalent: "")
+        let customizeSub = NSMenu()
 
         let iconItem = NSMenuItem(title: "Change Icon…", action: #selector(pickIcon), keyEquivalent: "")
         iconItem.target = self
-        menu.addItem(iconItem)
+        customizeSub.addItem(iconItem)
 
         let soundItem = NSMenuItem(title: "Change Sound…", action: #selector(pickSound), keyEquivalent: "")
         soundItem.target = self
-        menu.addItem(soundItem)
+        customizeSub.addItem(soundItem)
 
         // Colors submenu
         let colorsParent = NSMenuItem(title: "Colors", action: nil, keyEquivalent: "")
@@ -1007,7 +1047,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             colorsSub.addItem(sub)
         }
         colorsParent.submenu = colorsSub
-        menu.addItem(colorsParent)
+        customizeSub.addItem(colorsParent)
 
         // Labels submenu
         let labelsParent = NSMenuItem(title: "Labels", action: nil, keyEquivalent: "")
@@ -1025,23 +1065,14 @@ final class StatusController: NSObject, NSMenuDelegate {
             labelsSub.addItem(it)
         }
         labelsParent.submenu = labelsSub
-        menu.addItem(labelsParent)
+        customizeSub.addItem(labelsParent)
 
-        // Launch at Login
-        let launchItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
-        launchItem.target = self
-        launchItem.state = launchAtLoginEnabled() ? .on : .off
-        menu.addItem(launchItem)
-
-        // Copy Status
-        let copyItem = NSMenuItem(title: "Copy Status", action: #selector(copyStatus), keyEquivalent: "c")
-        copyItem.target = self
-        menu.addItem(copyItem)
-
-        // Reset All
         let resetAll = NSMenuItem(title: "Reset All Customizations", action: #selector(resetAllConfig), keyEquivalent: "")
         resetAll.target = self
-        menu.addItem(resetAll)
+        customizeSub.addItem(resetAll)
+
+        customizeParent.submenu = customizeSub
+        menu.addItem(customizeParent)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Version \(currentVersion)", action: nil, keyEquivalent: ""))
@@ -1086,6 +1117,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         let item = NSMenuItem()
         item.view = row
+        item.isEnabled = false
         return item
     }
 
@@ -1225,18 +1257,6 @@ final class StatusController: NSObject, NSMenuDelegate {
         setLaunchAtLogin(!enabled)
     }
 
-    @objc func copyStatus() {
-        guard let lead = sessions.values.max(by: { a, b in
-            let pa = priority(of: a.eff), pb = priority(of: b.eff)
-            return pa == pb ? a.ts < b.ts : pa < pb
-        }) else { return }
-        let now = Date().timeIntervalSince1970
-        let eff = lead.eff.isEmpty ? effectiveState(lead, now: now) : lead.eff
-        let text = statusText(lead, eff: eff)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
     @objc func resetAllConfig() {
         let path = configPath
         try? FileManager.default.removeItem(atPath: path)
@@ -1248,12 +1268,15 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: About Window
 
     @objc func showAbout() {
+        if aboutPanel?.isVisible == true { aboutPanel?.orderFront(nil); return }
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 300),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        panel.isReleasedWhenClosed = false
+        aboutPanel = panel
         panel.center()
         panel.title = ""
         panel.isFloatingPanel = true
@@ -1623,9 +1646,27 @@ final class StatusController: NSObject, NSMenuDelegate {
     func startBreakTimer() {
         cancelBreakTimer()
         guard breakEnabled, breakInterval > 0 else { return }
-        breakTimer = Timer.scheduledTimer(withTimeInterval: breakInterval, repeats: false) { [weak self] _ in
-            self?.showBreak()
+        if breakAudioOnly {
+            breakTimer = Timer.scheduledTimer(withTimeInterval: breakInterval, repeats: true) { [weak self] _ in
+                self?.playBreakAudio()
+            }
+        } else {
+            breakTimer = Timer.scheduledTimer(withTimeInterval: breakInterval, repeats: false) { [weak self] _ in
+                self?.showBreak()
+            }
         }
+    }
+
+    func playBreakAudio() {
+        if breakAudioPlayer == nil {
+            if let path = Bundle.main.path(forResource: "tic-toc", ofType: "wav") {
+                breakAudioPlayer = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+                breakAudioPlayer?.prepareToPlay()
+            }
+        }
+        breakAudioPlayer?.currentTime = 0
+        breakAudioPlayer?.volume = 1.0
+        breakAudioPlayer?.play()
     }
 
     func cancelBreakTimer() {
@@ -1634,6 +1675,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func showBreak() {
+        guard !breakActive else { return }
         breakActive = true
         breakCountdown = Int(breakDuration)
         if breakCountdown < 1 { breakCountdown = 1 }
@@ -1658,6 +1700,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let screens = NSScreen.screens
         for screen in screens {
             let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
             window.level = .screenSaver
             window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
             window.isOpaque = false
@@ -1690,8 +1733,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         breakCountdownTimer = nil
         for m in breakEventMonitors { NSEvent.removeMonitor(m) }
         breakEventMonitors = []
-        breakWindows.forEach { $0.close() }
-        breakWindows = []
+        breakWindows.forEach { $0.orderOut(nil) }
+        breakWindows.removeAll()
         countPlayer?.stop()
         playCompletionChime()
         startBreakTimer()
@@ -1805,7 +1848,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         case "permission":
             render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: "permission") ?? amber, animate: false, startedAt: 0, dot: true)
         case "thinking", "tool":
-            render(label: statusText(lead, eff: lead.eff), color: nil, animate: true, startedAt: lead.startedAt)
+            render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: lead.eff), animate: true, startedAt: lead.startedAt)
         default:
             renderResting()
         }
@@ -1817,7 +1860,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             statusItem.button?.title = ""
             return
         }
-        render(label: "", color: nil, animate: false, startedAt: 0)
+        render(label: "", color: effectiveColor(for: "idle"), animate: false, startedAt: 0)
     }
 
     func effectiveState(_ s: Session, now: Double) -> String {
@@ -1928,7 +1971,16 @@ final class StatusController: NSObject, NSMenuDelegate {
             let secs = Int(Date().timeIntervalSince1970 - startedAt)
             if secs > 0 { t = activeBase.isEmpty ? elapsed(secs) : activeBase + " " + elapsed(secs) }
         }
-        statusItem.button?.title = t
+        guard let button = statusItem.button else { return }
+        if let color = activeColor, !t.isEmpty {
+            button.attributedTitle = NSAttributedString(string: t, attributes: [
+                .foregroundColor: color,
+                .font: button.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            ])
+        } else {
+            button.attributedTitle = NSAttributedString(string: "")
+            button.title = t
+        }
     }
 
     func restingIcon(color: NSColor?) -> NSImage? {
@@ -2108,9 +2160,11 @@ final class StatusController: NSObject, NSMenuDelegate {
         let side: CGFloat = 18
         let glyph = termGlyphs[idx]
         let alpha = 0.3 + (1.0 - abs(progress - 0.5) * 2) * 0.7
+        let font = NSFont.monospacedSystemFont(ofSize: 14, weight: .bold)
         let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            guard NSGraphicsContext.current != nil else { return false }
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .bold),
+                .font: font,
                 .foregroundColor: NSColor.black.withAlphaComponent(alpha),
             ]
             (glyph as NSString).draw(at: NSPoint(x: 1, y: 1), withAttributes: attrs)

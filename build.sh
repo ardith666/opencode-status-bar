@@ -38,6 +38,7 @@ cp plugin/statusbar.ts "$APP/Contents/Resources/statusbar.ts"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 cp assets/completion.mp3 "$APP/Contents/Resources/completion.mp3" 2>/dev/null || true
 cp assets/count.mp3 "$APP/Contents/Resources/count.mp3" 2>/dev/null || true
+cp assets/tic-toc.wav "$APP/Contents/Resources/tic-toc.wav" 2>/dev/null || true
 
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 echo "Built $APP"
