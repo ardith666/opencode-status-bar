@@ -18,11 +18,7 @@
 
 > Built so you can tab away during a long thinking stretch and see, at a glance, whether OpenCode is working, waiting on you, or done.
 
-<p align="center">
-  <video src="assets/capture.mp4" width="600" autoplay loop muted playsinline></video>
-</p>
-
-> ⚡ GIF version also available at [`assets/capture.gif`](assets/capture.gif) for platforms that don't support inline video.
+<img width="600" height="488" alt="OpenCode Status Bar screenshot" src="https://github.com/user-attachments/assets/7d43f46f-349d-4296-a919-c08e77cd820b" />
 
 ---
 
