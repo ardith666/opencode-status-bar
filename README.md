@@ -36,13 +36,15 @@
 | Feature | Description |
 |---------|-------------|
 | **Show timer** | Toggle the elapsed clock on/off |
-| **Completion sound** | Soft chime when a turn >1 min finishes (user-selectable .mp3) |
-| **Notification sound** | Always plays Tink when OpenCode asks for permission (no toggle) |
+| **Completion sound** | Soft chime when a turn >1 min finishes (user-selectable) |
+| **Notification sound** | Always plays when OpenCode asks for permission (user-selectable, defaults to Tink) |
 | **Animation style** | OpenCode Spark · Block Build · Terminal Pulse · Bounce · Pulse · Dots |
 | **Hide idle sessions** | Auto-hide after 5m / 15m / 30m / 1h / never |
 | **Break Time** | Break reminder with two modes: fullscreen overlay or Sound Only |
-| **Sound Only** | Plays `tic-toc.wav` on interval, no fullscreen overlay (hides Duration & Labels) |
+| **Sound Only** | Plays sound on interval, no fullscreen overlay |
+| **System info** | CPU usage %, RAM used/total, and CPU temperature (°C) in menu between Sessions and Options |
 | **Customize** | Submenu with Change Icon, Change Sound, Colors, Labels, Reset All |
+| **Change Sound** | Completion, Permission, plus Break Time sounds: Sound Only, Starting, Completion |
 | **Colors** | Per-state color picker for Thinking, Idle, Permission, Tool — applies to status text & icon |
 | **Auto-update** | One-click "Update available" in menu |
 

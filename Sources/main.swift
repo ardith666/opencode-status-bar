@@ -330,11 +330,17 @@ final class StatusController: NSObject, NSMenuDelegate {
     var fileMTimes: [String: Date] = [:]
     var soundPrev: [String: String] = [:]
     var turnStart: [String: Double] = [:]
+    var sessionActiveStart: [String: Double] = [:]
     var menuIsOpen = false
     var sessionMenuItems: [(item: NSMenuItem, id: String)] = []
     var activeBase = ""
     var startedAt: Double = 0
     var activeColor: NSColor? = nil
+    var cpuUsage: Double = 0
+    var ramUsed: UInt64 = 0
+    var ramTotal: UInt64 = 0
+    var temperature: Double?
+    var prevCpuTicks: (user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)?
 
     let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1)
 
@@ -655,6 +661,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         render(label: "", color: nil, animate: false, startedAt: 0)
+        updateSystemStats()
         let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
@@ -836,6 +843,21 @@ final class StatusController: NSObject, NSMenuDelegate {
             menu.addItem(open)
             menu.addItem(.separator())
         }
+
+        // --- System Info
+        let usedGB = Double(ramUsed) / 1_073_741_824
+        let totalGB = Double(ramTotal) / 1_073_741_824
+        let ramStr = String(format: "%.1f", usedGB)
+        let totalStr = String(format: "%.1f", totalGB)
+        let cpuStr = String(format: "%.0f", cpuUsage)
+        menu.addItem(header("System"))
+        let cpuItem = NSMenuItem(title: "CPU: \(cpuStr)%", action: nil, keyEquivalent: "")
+        cpuItem.isEnabled = false
+        menu.addItem(cpuItem)
+        let ramItem = NSMenuItem(title: "RAM: \(ramStr)/\(totalStr) GB", action: nil, keyEquivalent: "")
+        ramItem.isEnabled = false
+        menu.addItem(ramItem)
+        menu.addItem(.separator())
 
         // --- Options
         menu.addItem(header("Options"))
@@ -1446,9 +1468,10 @@ final class StatusController: NSObject, NSMenuDelegate {
     func sessionMenuLine(_ s: Session) -> String {
         let now = Date().timeIntervalSince1970
         let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
+        let actStart = sessionActiveStart[s.id] ?? s.startedAt
         var line = truncated(sessionName(s))
-        if eff == "thinking" || eff == "tool", s.startedAt > 0 {
-            line += "  " + elapsed(max(0, Int(now - s.startedAt)))
+        if eff == "thinking" || eff == "tool", actStart > 0 {
+            line += "  " + elapsed(max(0, Int(now - actStart)))
         }
         return line
     }
@@ -1464,13 +1487,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         let cfg = uiConfig()
         let now = Date().timeIntervalSince1970
         let nameMax = loadedConfig.display?.nameMax ?? Int(cfg["nameMax"] ?? 16)
-        let working = (eff == "thinking" || eff == "tool") && s.startedAt > 0
+        let actStart = sessionActiveStart[s.id] ?? s.startedAt
+        let working = (eff == "thinking" || eff == "tool") && actStart > 0
         let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
         let tag = surfaceTag(s.entrypoint)
         v.configure(icon: sessionSymbol(s, eff: eff),
                     iconTint: resting ? .tertiaryLabelColor : .labelColor,
                     name: truncated(sessionName(s), max: nameMax, keep: nameMax),
-                    timer: working ? elapsed(max(0, Int(now - s.startedAt))) : nil,
+                    timer: working ? elapsed(max(0, Int(now - actStart))) : nil,
                     pillNormal: tag.isEmpty ? nil : pillImage(tag),
                     pillSelected: tag.isEmpty ? nil : pillImage(tag, selected: true),
                     pillInset: CGFloat(cfg["pillInset"] ?? 12),
@@ -1852,13 +1876,139 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
+    // MARK: SMC Temperature
+
+    struct SMCParam {
+        var key: UInt32 = 0
+        var vMaj: UInt8 = 0; var vMin: UInt8 = 0; var vBld: UInt8 = 0; var vRsv: UInt8 = 0; var vRel: UInt16 = 0
+        var _pad0: UInt16 = 0
+        var plVer: UInt16 = 0; var plLen: UInt16 = 0; var plCPU: UInt32 = 0; var plGPU: UInt32 = 0; var plMem: UInt32 = 0
+        var dSize: UInt32 = 0; var dType: UInt32 = 0; var dAttr: UInt8 = 0
+        var _pad1: UInt8 = 0; var _pad2: UInt8 = 0; var _pad3: UInt8 = 0
+        var r: UInt8 = 0; var s: UInt8 = 0; var d8: UInt8 = 0; var _pad4: UInt8 = 0; var d32: UInt32 = 0
+        var b0: UInt8 = 0; var b1: UInt8 = 0; var b2: UInt8 = 0; var b3: UInt8 = 0
+        var b4: UInt8 = 0; var b5: UInt8 = 0; var b6: UInt8 = 0; var b7: UInt8 = 0
+        var b8: UInt8 = 0; var b9: UInt8 = 0; var b10: UInt8 = 0; var b11: UInt8 = 0
+        var b12: UInt8 = 0; var b13: UInt8 = 0; var b14: UInt8 = 0; var b15: UInt8 = 0
+        var b16: UInt8 = 0; var b17: UInt8 = 0; var b18: UInt8 = 0; var b19: UInt8 = 0
+        var b20: UInt8 = 0; var b21: UInt8 = 0; var b22: UInt8 = 0; var b23: UInt8 = 0
+        var b24: UInt8 = 0; var b25: UInt8 = 0; var b26: UInt8 = 0; var b27: UInt8 = 0
+        var b28: UInt8 = 0; var b29: UInt8 = 0; var b30: UInt8 = 0; var b31: UInt8 = 0
+    }
+
+    func readTemperature() -> Double? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
+        guard service != 0 else { return nil }
+        var conn: io_connect_t = 0
+        guard IOServiceOpen(service, mach_task_self_, 0, &conn) == KERN_SUCCESS else {
+            IOObjectRelease(service); return nil
+        }
+        IOObjectRelease(service)
+        defer { IOServiceClose(conn) }
+
+        for keyStr in ["TC0P", "TC01", "TC0D"] {
+            if let val = smcReadValue(conn: conn, key: keyStr) {
+                return val
+            }
+        }
+        return nil
+    }
+
+    func smcReadValue(conn: io_connect_t, key: String) -> Double? {
+        let keyCode = key.utf8.reduce(0 as UInt32) { ($0 << 8) | UInt32($1) }.bigEndian
+
+        // kSMCGetKeyInfo
+        var input = SMCParam()
+        input.key = keyCode
+        input.d8 = 5
+
+        var output = SMCParam()
+        var outSize = MemoryLayout<SMCParam>.stride
+        let ret = withUnsafeMutablePointer(to: &input) { inpPtr in
+            withUnsafeMutablePointer(to: &output) { outPtr in
+                IOConnectCallStructMethod(conn, 2, inpPtr, MemoryLayout<SMCParam>.stride, outPtr, &outSize)
+            }
+        }
+        guard ret == KERN_SUCCESS else { return nil }
+
+        // kSMCReadKey
+        input.key = keyCode
+        input.dType = output.dType
+        input.dSize = output.dSize
+        input.d8 = 6
+
+        output = SMCParam()
+        outSize = MemoryLayout<SMCParam>.stride
+        let ret2 = withUnsafeMutablePointer(to: &input) { inpPtr in
+            withUnsafeMutablePointer(to: &output) { outPtr in
+                IOConnectCallStructMethod(conn, 2, inpPtr, MemoryLayout<SMCParam>.stride, outPtr, &outSize)
+            }
+        }
+        guard ret2 == KERN_SUCCESS else { return nil }
+
+        let dataType = output.dType.bigEndian
+        let dataSize = output.dSize.bigEndian
+
+        // sp78 format (signed 7.8 fixed point) = temperature in Celsius
+        if dataType == 0x73703738 && dataSize >= 2 { // "sp78"
+            let hi = UInt16(output.b0) << 8 | UInt16(output.b1)
+            let isNeg = (hi & 0x8000) != 0
+            let val = isNeg ? -(Double(~hi & 0x7FFF) + 1) : Double(hi)
+            return val / 256.0
+        }
+        // flt format (float)
+        if dataType == 0x666C7420 && dataSize >= 4 { // "flt "
+            let bits = UInt32(output.b0) << 24 | UInt32(output.b1) << 16 | UInt32(output.b2) << 8 | UInt32(output.b3)
+            return Double(Float(bitPattern: bits))
+        }
+        return nil
+    }
+
     // MARK: State Polling
+
+    func updateSystemStats() {
+        ramTotal = ProcessInfo.processInfo.physicalMemory
+        var size = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        var stats = vm_statistics64_data_t()
+        let kr = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &size)
+            }
+        }
+        if kr == KERN_SUCCESS {
+            let pageSize = UInt64(vm_page_size)
+            let active = UInt64(stats.active_count)
+            let wired = UInt64(stats.wire_count)
+            let compressed = UInt64(stats.compressor_page_count)
+            ramUsed = (active + wired + compressed) * pageSize
+        }
+
+        var cpuLoad = host_cpu_load_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr2 = withUnsafeMutablePointer(to: &cpuLoad) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &count)
+            }
+        }
+        if kr2 == KERN_SUCCESS {
+            let cur = (cpuLoad.cpu_ticks.0, cpuLoad.cpu_ticks.1, cpuLoad.cpu_ticks.2, cpuLoad.cpu_ticks.3)
+            if let prev = prevCpuTicks {
+                let totalDelta = (cur.0 - prev.0) + (cur.1 - prev.1) + (cur.2 - prev.2) + (cur.3 - prev.3)
+                let idleDelta = cur.2 - prev.2
+                cpuUsage = totalDelta > 0 ? Double(totalDelta - idleDelta) / Double(totalDelta) * 100 : 0
+            }
+            prevCpuTicks = cur
+        }
+
+        temperature = readTemperature()
+    }
 
     func tick() {
         reloadConfigIfNeeded()
         checkLifecycle()
         reloadSessions()
         evaluate()
+        updateSystemStats()
         if menuIsOpen { refreshOpenMenuRows() }
     }
 
@@ -1899,14 +2049,22 @@ final class StatusController: NSObject, NSMenuDelegate {
                                  : (s.eff == "idle" && stalePruneAge > 0 && now - s.ts > stalePruneAge)
             if dead {
                 try? FileManager.default.removeItem(atPath: (stateDir as NSString).appendingPathComponent(id + ".json"))
-                sessions[id] = nil; fileMTimes[id + ".json"] = nil; soundPrev[id] = nil; turnStart[id] = nil
+                sessions[id] = nil; fileMTimes[id + ".json"] = nil; soundPrev[id] = nil; turnStart[id] = nil; sessionActiveStart[id] = nil
                 continue
             }
             sessions[id] = s
+            let isActive = (s.eff == "thinking" || s.eff == "tool" || s.eff == "permission")
+            if isActive {
+                if sessionActiveStart[id] == nil {
+                    sessionActiveStart[id] = s.startedAt > 0 ? s.startedAt : now
+                }
+            } else {
+                sessionActiveStart[id] = nil
+            }
             if notifEdge(s) { notif = true }
             if soundEdgeDone(s, now: now) { chime = true }
         }
-        for id in Array(soundPrev.keys) where sessions[id] == nil { soundPrev[id] = nil; turnStart[id] = nil }
+        for id in Array(soundPrev.keys) where sessions[id] == nil { soundPrev[id] = nil; turnStart[id] = nil; sessionActiveStart[id] = nil }
         if chime { playCompletionChime() }
         if notif { playNotifChime() }
 
@@ -1921,7 +2079,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         case "permission":
             render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: "permission") ?? amber, animate: false, startedAt: 0, dot: true)
         case "thinking", "tool":
-            render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: lead.eff), animate: true, startedAt: lead.startedAt)
+            render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: lead.eff), animate: true, startedAt: sessionActiveStart[lead.id] ?? lead.startedAt)
         default:
             renderResting()
         }
@@ -2078,13 +2236,13 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func dotIcon(color: NSColor?) -> NSImage? {
         let side: CGFloat = 18
+        let c = color ?? amber
         let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            NSColor.black.setFill()
+            c.setFill()
             ctx.fillEllipse(in: rect.insetBy(dx: 3, dy: 3))
             return true
         }
-        img.isTemplate = true
         return img
     }
 
