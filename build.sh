@@ -23,8 +23,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>OpenCode Status Bar</string>
   <key>CFBundleIdentifier</key><string>com.local.opencodestatusbar</string>
   <key>CFBundleExecutable</key><string>OpenCodeStatusBar</string>
-  <key>CFBundleVersion</key><string>0.2.1</string>
-  <key>CFBundleShortVersionString</key><string>0.2.1</string>
+  <key>CFBundleVersion</key><string>1.0.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSUIElement</key><true/>
@@ -37,6 +37,7 @@ mkdir -p "$APP/Contents/Resources"
 cp plugin/statusbar.ts "$APP/Contents/Resources/statusbar.ts"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 cp assets/completion.mp3 "$APP/Contents/Resources/completion.mp3" 2>/dev/null || true
+cp assets/count.mp3 "$APP/Contents/Resources/count.mp3" 2>/dev/null || true
 
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 echo "Built $APP"

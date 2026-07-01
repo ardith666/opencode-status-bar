@@ -21,6 +21,11 @@ struct SBConfig: Codable {
     var labels: LabelConfig?
     var sound: SoundConfig?
     var display: DisplayConfig?
+    var breakTime: BreakConfig?
+    enum CodingKeys: String, CodingKey {
+        case icon, colors, labels, sound, display
+        case breakTime = "break"
+    }
 
     struct IconConfig: Codable {
         var path: String?
@@ -38,15 +43,28 @@ struct SBConfig: Codable {
         var permission: String?
         var idle: String?
         var done: String?
+        var breakTitle: String?
+        var breakMessage: String?
     }
     struct SoundConfig: Codable {
         var path: String?
+        var minDuration: Double?
+        var notifEnabled: Bool?
     }
     struct DisplayConfig: Codable {
         var showTimer: Bool?
         var hideIdleAfter: Double?
         var nameMax: Int?
         var boxWidth: Double?
+    }
+    struct BreakConfig: Codable {
+        var enabled: Bool?
+        var interval: Double?
+        var duration: Double?
+        var soundPath: String?
+        enum CodingKeys: String, CodingKey {
+            case enabled, interval, duration, soundPath
+        }
     }
 }
 
@@ -411,35 +429,41 @@ final class StatusController: NSObject, NSMenuDelegate {
     func configLabel(_ key: String) -> String? {
         guard let l = loadedConfig.labels else { return nil }
         switch key {
-        case "thinking":   return l.thinking
-        case "waiting":    return l.waiting
-        case "permission": return l.permission
-        case "idle":       return l.idle
-        case "done":       return l.done
-        default:           return nil
+        case "thinking":     return l.thinking
+        case "waiting":      return l.waiting
+        case "permission":   return l.permission
+        case "idle":         return l.idle
+        case "done":         return l.done
+        case "breakTitle":   return l.breakTitle
+        case "breakMessage": return l.breakMessage
+        default:             return nil
         }
     }
 
     func setConfigLabel(_ key: String, _ value: String) {
         if loadedConfig.labels == nil { loadedConfig.labels = SBConfig.LabelConfig() }
         switch key {
-        case "thinking":   loadedConfig.labels?.thinking = value
-        case "waiting":    loadedConfig.labels?.waiting = value
-        case "permission": loadedConfig.labels?.permission = value
-        case "idle":       loadedConfig.labels?.idle = value
-        case "done":       loadedConfig.labels?.done = value
-        default:           break
+        case "thinking":     loadedConfig.labels?.thinking = value
+        case "waiting":      loadedConfig.labels?.waiting = value
+        case "permission":   loadedConfig.labels?.permission = value
+        case "idle":         loadedConfig.labels?.idle = value
+        case "done":         loadedConfig.labels?.done = value
+        case "breakTitle":   loadedConfig.labels?.breakTitle = value
+        case "breakMessage": loadedConfig.labels?.breakMessage = value
+        default:             break
         }
     }
 
     func defaultLabel(for key: String) -> String {
         switch key {
-        case "thinking":   return "Thinking…"
-        case "waiting":    return "Waiting permission"
-        case "permission": return "Waiting permission"
-        case "idle":       return "Idle"
-        case "done":       return "Done"
-        default:           return ""
+        case "thinking":     return "Thinking…"
+        case "waiting":      return "Waiting permission"
+        case "permission":   return "Waiting permission"
+        case "idle":         return "Idle"
+        case "done":         return "Done"
+        case "breakTitle":   return "Break Time"
+        case "breakMessage": return "Stand up, stretch, look away from screen"
+        default:             return ""
         }
     }
 
@@ -462,7 +486,39 @@ final class StatusController: NSObject, NSMenuDelegate {
     var animStyle = AnimStyle.block
     var showTimer = false
     var playCompletionSound = false
+    var playNotifSound: Bool = {
+        let d = UserDefaults.standard
+        return d.object(forKey: "notifSound") as? Bool ?? true
+    }()
+    var soundMinDuration: Double = {
+        let v = UserDefaults.standard.double(forKey: "soundMinDuration")
+        return v > 0 ? v : 60
+    }()
     var audioPlayer: AVAudioPlayer?
+    var notifPlayer: AVAudioPlayer?
+    var countPlayer: AVAudioPlayer?
+
+    // MARK: Break Time
+    let breakIcons = ["☕️", "🧘", "👀", "🌿", "🪴"]
+    var breakEnabled: Bool = {
+        let d = UserDefaults.standard
+        return d.object(forKey: "breakEnabled") as? Bool ?? true
+    }()
+    var breakInterval: Double = {
+        let v = UserDefaults.standard.double(forKey: "breakInterval")
+        return v > 0 ? v : 1800
+    }()
+    var breakDuration: Double = {
+        let v = UserDefaults.standard.double(forKey: "breakDuration")
+        return v > 0 ? v : 10
+    }()
+    var breakTimer: Timer?
+    var breakCountdown = 0
+    var breakActive = false
+    var breakWindows: [NSWindow] = []
+    var breakEventMonitors: [Any] = []
+    var breakIconIndex = 0
+    var breakCountdownTimer: Timer?
 
     func playCompletionChime() {
         guard playCompletionSound else { return }
@@ -475,6 +531,16 @@ final class StatusController: NSObject, NSMenuDelegate {
             }
             audioPlayer?.volume = 1.0
             audioPlayer?.play()
+        } catch {}
+    }
+
+    func playNotifChime() {
+        guard playNotifSound else { return }
+        do {
+            let url = URL(fileURLWithPath: "/System/Library/Sounds/Tink.aiff")
+            notifPlayer = try AVAudioPlayer(contentsOf: url)
+            notifPlayer?.volume = 1.0
+            notifPlayer?.play()
         } catch {}
     }
 
@@ -562,10 +628,18 @@ final class StatusController: NSObject, NSMenuDelegate {
         let d = UserDefaults.standard
         if d.object(forKey: "showTimer") != nil { showTimer = d.bool(forKey: "showTimer") }
         if d.object(forKey: "completionSound") != nil { playCompletionSound = d.bool(forKey: "completionSound") }
+        if d.object(forKey: "notifSound") != nil { playNotifSound = d.bool(forKey: "notifSound") }
+        if d.object(forKey: "breakEnabled") != nil { breakEnabled = d.bool(forKey: "breakEnabled") }
+        if d.object(forKey: "breakInterval") != nil { breakInterval = max(d.double(forKey: "breakInterval"), 1) }
+        if d.object(forKey: "breakDuration") != nil { breakDuration = max(d.double(forKey: "breakDuration"), 1) }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
         // config overrides UserDefaults
         if let v = loadedConfig.display?.showTimer { showTimer = v }
         if let v = loadedConfig.display?.hideIdleAfter { d.set(v, forKey: "hideIdleAfter") }
+        if let v = loadedConfig.sound?.notifEnabled { playNotifSound = v }
+        if let v = loadedConfig.breakTime?.enabled { breakEnabled = v }
+        if let v = loadedConfig.breakTime?.interval { breakInterval = v }
+        if let v = loadedConfig.breakTime?.duration { breakDuration = v }
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
@@ -574,6 +648,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
         tick()
+        startBreakTimer()
         ensurePluginInstalled()
         checkForUpdate()
     }
@@ -758,7 +833,8 @@ final class StatusController: NSObject, NSMenuDelegate {
             self?.saveConfig()
             self?.applyTitle()
         })
-        menu.addItem(toggleRow(title: "Completion sound (1m+)", isOn: playCompletionSound) { [weak self] on in
+        let durLabel = soundMinDuration >= 60 ? "\(Int(soundMinDuration / 60))m" : "\(Int(soundMinDuration))s"
+        menu.addItem(toggleRow(title: "Completion sound (≥\(durLabel))", isOn: playCompletionSound) { [weak self] on in
             guard let self = self else { return }
             self.playCompletionSound = on
             UserDefaults.standard.set(on, forKey: "completionSound")
@@ -767,9 +843,96 @@ final class StatusController: NSObject, NSMenuDelegate {
             }
         })
         if playCompletionSound {
+            let durItem = NSMenuItem(title: "Min duration: \(durLabel)", action: nil, keyEquivalent: "")
+            let durSub = NSMenu()
+            let choices: [(title: String, value: Double)] = [
+                ("0s (always)", 0), ("10s", 10), ("30s", 30),
+                ("1m", 60), ("2m", 120), ("5m", 300),
+            ]
+            for (title, val) in choices {
+                let it = NSMenuItem(title: title, action: #selector(chooseMinDuration(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = val
+                it.state = soundMinDuration == val ? NSControl.StateValue.on : NSControl.StateValue.off
+                durSub.addItem(it)
+            }
+            durItem.submenu = durSub
+            durItem.indentationLevel = 1
+            menu.addItem(durItem)
+
             let testSoundItem = NSMenuItem(title: "Test Sound", action: #selector(testSound), keyEquivalent: "")
             testSoundItem.target = self
+            testSoundItem.indentationLevel = 1
             menu.addItem(testSoundItem)
+        }
+
+        menu.addItem(toggleRow(title: "Notification sound", isOn: playNotifSound) { [weak self] on in
+            guard let self = self else { return }
+            self.playNotifSound = on
+            UserDefaults.standard.set(on, forKey: "notifSound")
+            if self.loadedConfig.sound == nil { self.loadedConfig.sound = SBConfig.SoundConfig() }
+            self.loadedConfig.sound?.notifEnabled = on
+            self.saveConfig()
+            if let menu = self.statusItem.menu { self.populateMenu(menu) }
+        })
+
+        // --- Break Time
+        let bi = Int(breakInterval); let bIntervalLabel = bi >= 3600 ? "\(bi / 3600)h \((bi % 3600) / 60)m" : bi >= 60 ? "\(bi / 60)m" : "\(bi)s"
+        let bDurLabel = "\(Int(breakDuration))s"
+        menu.addItem(toggleRow(title: "Break Time", isOn: breakEnabled) { [weak self] on in
+            guard let self = self else { return }
+            self.breakEnabled = on
+            UserDefaults.standard.set(on, forKey: "breakEnabled")
+            if self.loadedConfig.breakTime == nil { self.loadedConfig.breakTime = SBConfig.BreakConfig() }
+            self.loadedConfig.breakTime?.enabled = on
+            self.saveConfig()
+            if on { self.startBreakTimer() } else { self.cancelBreakTimer() }
+            if let menu = self.statusItem.menu { self.populateMenu(menu) }
+        })
+        if breakEnabled {
+            let breakIntItem = NSMenuItem(title: "Interval: \(bIntervalLabel)", action: nil, keyEquivalent: "")
+            let breakIntSub = NSMenu()
+            for (name, val) in [("15m", 900.0), ("30m", 1800.0), ("45m", 2700.0), ("60m", 3600.0)] {
+                let it = NSMenuItem(title: name, action: #selector(chooseBreakInterval(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = val
+                it.state = breakInterval == val ? NSControl.StateValue.on : NSControl.StateValue.off
+                breakIntSub.addItem(it)
+            }
+            let customInt = NSMenuItem(title: "Custom…", action: #selector(chooseCustomInterval), keyEquivalent: "")
+            customInt.target = self
+            customInt.indentationLevel = 1
+            breakIntSub.addItem(NSMenuItem.separator())
+            breakIntSub.addItem(customInt)
+            breakIntItem.submenu = breakIntSub
+            breakIntItem.indentationLevel = 1
+            menu.addItem(breakIntItem)
+
+            let breakDurItem = NSMenuItem(title: "Duration: \(bDurLabel)", action: nil, keyEquivalent: "")
+            let breakDurSub = NSMenu()
+            for (name, val) in [("5s", 5.0), ("10s", 10.0), ("15s", 15.0), ("30s", 30.0)] {
+                let it = NSMenuItem(title: name, action: #selector(chooseBreakDuration(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = val
+                it.state = breakDuration == val ? NSControl.StateValue.on : NSControl.StateValue.off
+                breakDurSub.addItem(it)
+            }
+            breakDurItem.submenu = breakDurSub
+            breakDurItem.indentationLevel = 1
+            menu.addItem(breakDurItem)
+
+            let breakLabelItem = NSMenuItem(title: "Customize Labels…", action: nil, keyEquivalent: "")
+            let breakLabelSub = NSMenu()
+            for (key, display) in [("breakTitle", "Title"), ("breakMessage", "Message")] {
+                let cur = configLabel(key) ?? defaultLabel(for: key)
+                let it = NSMenuItem(title: "\(display): \"\(cur)\"", action: #selector(editBreakLabel(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = key
+                breakLabelSub.addItem(it)
+            }
+            breakLabelItem.submenu = breakLabelSub
+            breakLabelItem.indentationLevel = 1
+            menu.addItem(breakLabelItem)
         }
 
         let animParent = NSMenuItem(title: "Animation Style", action: nil, keyEquivalent: "")
@@ -849,9 +1012,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         // Labels submenu
         let labelsParent = NSMenuItem(title: "Labels", action: nil, keyEquivalent: "")
         let labelsSub = NSMenu()
-        for key in ["thinking", "waiting", "idle", "done"] {
+        let labelEntries: [(String, String)] = [
+            ("thinking", "Thinking"), ("waiting", "Waiting"),
+            ("idle", "Idle"), ("done", "Done"),
+            ("breakTitle", "Break Title"), ("breakMessage", "Break Message"),
+        ]
+        for (key, display) in labelEntries {
             let label = configLabel(key) ?? defaultLabel(for: key)
-            let it = NSMenuItem(title: "\(key.capitalized): \"\(label)\"", action: #selector(editLabel(_:)), keyEquivalent: "")
+            let it = NSMenuItem(title: "\(display): \"\(label)\"", action: #selector(editLabel(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = key
             labelsSub.addItem(it)
@@ -1106,7 +1274,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         nameField.frame = NSRect(x: 0, y: 190, width: 320, height: 20)
         content.addSubview(nameField)
 
-        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.1"
+        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
         let verField = NSTextField(labelWithString: "Version \(ver)")
         verField.font = .systemFont(ofSize: 12)
         verField.textColor = .secondaryLabelColor
@@ -1387,6 +1555,181 @@ final class StatusController: NSObject, NSMenuDelegate {
         evaluate()
     }
 
+    @objc func chooseMinDuration(_ sender: NSMenuItem) {
+        guard let val = sender.representedObject as? Double else { return }
+        soundMinDuration = val
+        UserDefaults.standard.set(val, forKey: "soundMinDuration")
+        if loadedConfig.sound == nil { loadedConfig.sound = SBConfig.SoundConfig() }
+        loadedConfig.sound?.minDuration = val
+        saveConfig()
+        if let menu = statusItem.menu { populateMenu(menu) }
+    }
+
+    // MARK: Break Time
+
+    @objc func toggleBreak(_ sender: Any) {
+        breakEnabled.toggle()
+        UserDefaults.standard.set(breakEnabled, forKey: "breakEnabled")
+        if loadedConfig.breakTime == nil { loadedConfig.breakTime = SBConfig.BreakConfig() }
+        loadedConfig.breakTime?.enabled = breakEnabled
+        saveConfig()
+        if breakEnabled { startBreakTimer() } else { cancelBreakTimer() }
+        if let menu = statusItem.menu { populateMenu(menu) }
+    }
+
+    @objc func chooseBreakInterval(_ sender: NSMenuItem) {
+        guard let val = sender.representedObject as? Double else { return }
+        breakInterval = max(val, 1)
+        UserDefaults.standard.set(breakInterval, forKey: "breakInterval")
+        if loadedConfig.breakTime == nil { loadedConfig.breakTime = SBConfig.BreakConfig() }
+        loadedConfig.breakTime?.interval = breakInterval
+        saveConfig()
+        startBreakTimer()
+        if let menu = statusItem.menu { populateMenu(menu) }
+    }
+
+    @objc func chooseCustomInterval() {
+        let alert = NSAlert()
+        alert.messageText = "Custom Break Interval"
+        alert.informativeText = "Enter interval in minutes:"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        field.placeholderString = "e.g. 90"
+        field.stringValue = "\(Int(breakInterval / 60))"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard let mins = Double(trimmed), mins >= 1 else { return }
+        breakInterval = mins * 60
+        UserDefaults.standard.set(breakInterval, forKey: "breakInterval")
+        if loadedConfig.breakTime == nil { loadedConfig.breakTime = SBConfig.BreakConfig() }
+        loadedConfig.breakTime?.interval = breakInterval
+        saveConfig()
+        startBreakTimer()
+        if let menu = statusItem.menu { populateMenu(menu) }
+    }
+
+    @objc func chooseBreakDuration(_ sender: NSMenuItem) {
+        guard let val = sender.representedObject as? Double else { return }
+        breakDuration = val
+        UserDefaults.standard.set(val, forKey: "breakDuration")
+        if loadedConfig.breakTime == nil { loadedConfig.breakTime = SBConfig.BreakConfig() }
+        loadedConfig.breakTime?.duration = val
+        saveConfig()
+        if let menu = statusItem.menu { populateMenu(menu) }
+    }
+
+    func startBreakTimer() {
+        cancelBreakTimer()
+        guard breakEnabled, breakInterval > 0 else { return }
+        breakTimer = Timer.scheduledTimer(withTimeInterval: breakInterval, repeats: false) { [weak self] _ in
+            self?.showBreak()
+        }
+    }
+
+    func cancelBreakTimer() {
+        breakTimer?.invalidate()
+        breakTimer = nil
+    }
+
+    func showBreak() {
+        breakActive = true
+        breakCountdown = Int(breakDuration)
+        if breakCountdown < 1 { breakCountdown = 1 }
+
+        NSSound(named: "Tink")?.play()
+
+        if let path = Bundle.main.path(forResource: "count", ofType: "mp3") {
+            countPlayer = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+        }
+        countPlayer?.volume = 1.0
+
+        breakIconIndex = Int.random(in: 0..<breakIcons.count)
+        let bTitle = configLabel("breakTitle") ?? defaultLabel(for: "breakTitle")
+        let bMsg = configLabel("breakMessage") ?? defaultLabel(for: "breakMessage")
+        let cnt = breakIcons.count
+        let carIcons = (0..<5).map { i -> String in
+            let idx = (breakIconIndex + i - 2 + cnt) % cnt
+            return breakIcons[idx]
+        }
+
+        let screens = NSScreen.screens
+        for screen in screens {
+            let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.level = .screenSaver
+            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+
+            let view = BreakView(frame: screen.frame)
+            view.setCarousel(carIcons)
+            view.show(title: bTitle, count: breakCountdown, message: bMsg)
+            view.onSkip = { [weak self] in self?.hideBreak() }
+            window.contentView = view
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            breakWindows.append(window)
+        }
+
+        if let km = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged], handler: { _ in nil }) {
+            breakEventMonitors.append(km)
+        }
+
+        breakCountdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.breakTick()
+        }
+    }
+
+    func hideBreak() {
+        guard breakActive else { return }
+        breakActive = false
+        breakCountdownTimer?.invalidate()
+        breakCountdownTimer = nil
+        for m in breakEventMonitors { NSEvent.removeMonitor(m) }
+        breakEventMonitors = []
+        breakWindows.forEach { $0.close() }
+        breakWindows = []
+        playCompletionChime()
+        startBreakTimer()
+    }
+
+    func breakTick() {
+        guard breakActive else { return }
+        breakCountdown -= 1
+        breakIconIndex = (breakIconIndex + 1) % breakIcons.count
+        countPlayer?.currentTime = 0
+        countPlayer?.play()
+        let newIcon = breakIcons[(breakIconIndex + 2) % breakIcons.count]
+        for w in breakWindows {
+            let v = w.contentView as? BreakView
+            v?.updateCountdown(breakCountdown)
+            v?.slideCarousel(newIcon: newIcon)
+        }
+        if breakCountdown <= 0 { hideBreak() }
+    }
+
+    @objc func editBreakLabel(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        let displayName = key == "breakTitle" ? "Break Title" : "Break Message"
+        let current = configLabel(key) ?? defaultLabel(for: key)
+        let alert = NSAlert()
+        alert.messageText = "Edit \(displayName)"
+        alert.informativeText = "Enter a custom \(displayName.lowercased()):"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = current
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let value = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return }
+        setConfigLabel(key, value)
+        saveConfig()
+        if let menu = statusItem.menu { populateMenu(menu) }
+    }
+
     // MARK: State Polling
 
     func tick() {
@@ -1425,6 +1768,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func evaluate() {
         let now = Date().timeIntervalSince1970
         var chime = false
+        var notif = false
 
         for id in Array(sessions.keys) {
             guard var s = sessions[id] else { continue }
@@ -1437,10 +1781,12 @@ final class StatusController: NSObject, NSMenuDelegate {
                 continue
             }
             sessions[id] = s
+            if notifEdge(s) { notif = true }
             if soundEdgeDone(s, now: now) { chime = true }
         }
         for id in Array(soundPrev.keys) where sessions[id] == nil { soundPrev[id] = nil; turnStart[id] = nil }
         if chime { playCompletionChime() }
+        if notif { playNotifChime() }
 
         let lead = sessions.values.max { a, b in
             let pa = priority(of: a.eff), pb = priority(of: b.eff)
@@ -1485,10 +1831,16 @@ final class StatusController: NSObject, NSMenuDelegate {
         var edge = false
         let isNowIdle = s.eff == "idle" || s.eff.isEmpty
         let wasBusy = prev == "thinking" || prev == "tool"
-        if wasBusy && isNowIdle, let st = turnStart[s.id], st > 0, now - st >= 60 { edge = true }
+        if wasBusy && isNowIdle, let st = turnStart[s.id], st > 0, now - st >= soundMinDuration { edge = true }
         if isNowIdle { turnStart[s.id] = 0 }
         soundPrev[s.id] = s.eff
         return edge
+    }
+
+    func notifEdge(_ s: Session) -> Bool {
+        guard playNotifSound else { return false }
+        let prev = soundPrev[s.id] ?? ""
+        return s.eff == "permission" && prev != "permission"
     }
 
     // MARK: Lifecycle
@@ -1771,6 +2123,147 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         controller = StatusController()
+    }
+}
+
+// MARK: Break View
+
+class BreakView: NSView {
+    private let titleField = NSTextField(labelWithString: "")
+    private let countField = NSTextField(labelWithString: "")
+    private let msgField = NSTextField(labelWithString: "")
+    private let skipButton = NSButton(title: "Skip Break", target: nil, action: nil)
+    var onSkip: (() -> Void)?
+
+    private var slots: [NSTextField] = []
+    private var headIdx = 0
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+
+        titleField.font = .boldSystemFont(ofSize: 32)
+        titleField.alignment = .center
+        titleField.textColor = .white
+        titleField.isBezeled = false
+        titleField.drawsBackground = false
+        titleField.isEditable = false
+        titleField.isSelectable = false
+
+        countField.font = .monospacedSystemFont(ofSize: 72, weight: .bold)
+        countField.alignment = .center
+        countField.textColor = .white
+        countField.isBezeled = false
+        countField.drawsBackground = false
+        countField.isEditable = false
+        countField.isSelectable = false
+
+        msgField.font = .systemFont(ofSize: 15)
+        msgField.alignment = .center
+        msgField.textColor = .secondaryLabelColor
+        msgField.isBezeled = false
+        msgField.drawsBackground = false
+        msgField.isEditable = false
+        msgField.isSelectable = false
+
+        skipButton.bezelStyle = .rounded
+        skipButton.font = .systemFont(ofSize: 14)
+        skipButton.contentTintColor = .white
+        skipButton.isBordered = true
+        skipButton.target = self
+        skipButton.action = #selector(skipTapped)
+
+        addSubview(titleField)
+        addSubview(msgField)
+        addSubview(countField)
+        addSubview(skipButton)
+
+        for _ in 0..<5 {
+            let f = NSTextField(labelWithString: "")
+            f.font = .systemFont(ofSize: 64)
+            f.alignment = .center
+            f.textColor = .white
+            f.isBezeled = false
+            f.drawsBackground = false
+            f.isEditable = false
+            f.isSelectable = false
+            slots.append(f)
+            addSubview(f)
+        }
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    @objc private func skipTapped() { onSkip?() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let grad = NSGradient(starting: NSColor(srgbRed: 0.12, green: 0.12, blue: 0.14, alpha: 0.75),
+                              ending: NSColor(srgbRed: 0.08, green: 0.08, blue: 0.1, alpha: 0.7))
+        grad?.draw(in: bounds, angle: -45)
+    }
+
+    override func layout() {
+        super.layout()
+        let w = bounds.width, h = bounds.height
+        let cY = h * 0.5
+        titleField.frame = NSRect(x: 0, y: cY + 15, width: w, height: 40)
+        msgField.frame = NSRect(x: 40, y: cY - 15, width: w - 80, height: 22)
+        countField.frame = NSRect(x: 0, y: h * 0.22, width: w, height: 80)
+        skipButton.frame = NSRect(x: (w - 120) / 2, y: h * 0.14, width: 120, height: 28)
+        layoutSlots()
+    }
+
+    private func layoutSlots() {
+        for (i, slot) in slots.enumerated() {
+            let vp = ((i - headIdx + 5) % 5) - 2
+            let (frame, alpha) = slotFrame(vp)
+            slot.frame = frame
+            slot.alphaValue = alpha
+        }
+    }
+
+    private func slotFrame(_ vp: Int) -> (NSRect, CGFloat) {
+        let cx = bounds.width / 2
+        let cy = bounds.height * 0.5 + 60
+        let gap: CGFloat = 90
+        let isMid = vp == 0
+        let size: CGFloat = isMid ? 64 : 44
+        let alpha: CGFloat = isMid ? 1.0 : (vp == -1 || vp == 1 ? 0.35 : 0)
+        let x = cx + CGFloat(vp) * gap - size / 2
+        return (NSRect(x: x, y: cy, width: size, height: size * 1.2), alpha)
+    }
+
+    func setCarousel(_ icons: [String]) {
+        headIdx = 0
+        for i in 0..<5 {
+            slots[i].stringValue = i < icons.count ? icons[i] : ""
+        }
+        layoutSlots()
+    }
+
+    func slideCarousel(newIcon: String) {
+        slots[headIdx].stringValue = newIcon
+        headIdx = (headIdx + 1) % 5
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.28
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            for (i, slot) in self.slots.enumerated() {
+                let vp = ((i - self.headIdx + 5) % 5) - 2
+                let (frame, alpha) = self.slotFrame(vp)
+                slot.animator().frame = frame
+                slot.animator().alphaValue = alpha
+            }
+        })
+    }
+
+    func show(title: String, count: Int, message: String) {
+        titleField.stringValue = title
+        countField.stringValue = "\(count)"
+        msgField.stringValue = message
+    }
+
+    func updateCountdown(_ count: Int) {
+        countField.stringValue = "\(count)"
     }
 }
 

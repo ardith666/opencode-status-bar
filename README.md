@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-12%2B-brightgreen" alt="macOS 12+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT">
-  <img src="https://img.shields.io/badge/version-0.1.0-orange" alt="Version 0.1.0">
+  <img src="https://img.shields.io/badge/version-1.0.0-orange" alt="Version 1.0.0">
   <img src="https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-lightgrey" alt="Universal Binary">
   <img src="https://img.shields.io/badge/Swift-5-orange" alt="Swift 5">
   <img src="https://img.shields.io/badge/Bun-Typescript-14151a" alt="Bun">
@@ -36,9 +36,12 @@
 | Feature | Description |
 |---------|-------------|
 | **Show timer** | Toggle the elapsed clock on/off |
-| **Completion sound** | Soft chime when a turn >1 min finishes |
-| **Animation style** | OpenCode Spark · Block Build · Terminal Pulse |
+| **Completion sound** | Soft chime when a turn >1 min finishes (user-selectable .mp3) |
+| **Notification sound** | Tink sound when OpenCode needs permission |
+| **Animation style** | OpenCode Spark · Block Build · Terminal Pulse · Bounce · Pulse · Dots |
 | **Hide idle sessions** | Auto-hide after 5m / 15m / 30m / 1h / never |
+| **Break Time** | Full-screen overlay every 30m — emoji carousel with countdown, count.mp3 tick, completion chime, skip button |
+| **Custom interval** | Custom break interval via dialog (supports any value, e.g. 2h) |
 | **Auto-update** | One-click "Update available" in menu |
 
 ---

@@ -186,6 +186,7 @@ export default async () => {
 
     "tool.execute.after": async (input: { tool: string; sessionID: string; args: any }) => {
       const sid = safeStr(input.sessionID)
+      if (pendingPermissions.has(sid)) return
       const prev = sessions.get(sid)
       sessions.set(sid, { ...prev, busy: true, tool: undefined })
       setState(sid, "thinking", "Thinking…", "", "", Date.now() / 1000)
