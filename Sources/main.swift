@@ -1,4 +1,67 @@
 import Cocoa
+import UniformTypeIdentifiers
+import AVFoundation
+
+// MARK: - Animation Style
+
+enum AnimStyle: String, CaseIterable {
+    case spark = "spark"
+    case block = "block"
+    case term = "term"
+    case bounce = "bounce"
+    case pulse = "pulse"
+    case dots = "dots"
+}
+
+// MARK: - Config
+
+struct SBConfig: Codable {
+    var icon: IconConfig?
+    var colors: ColorConfig?
+    var labels: LabelConfig?
+    var sound: SoundConfig?
+    var display: DisplayConfig?
+
+    struct IconConfig: Codable {
+        var path: String?
+        var size: Double?
+    }
+    struct ColorConfig: Codable {
+        var thinking: [Double]?
+        var idle: [Double]?
+        var permission: [Double]?
+        var tool: [Double]?
+    }
+    struct LabelConfig: Codable {
+        var thinking: String?
+        var waiting: String?
+        var permission: String?
+        var idle: String?
+        var done: String?
+    }
+    struct SoundConfig: Codable {
+        var path: String?
+    }
+    struct DisplayConfig: Codable {
+        var showTimer: Bool?
+        var hideIdleAfter: Double?
+        var nameMax: Int?
+        var boxWidth: Double?
+    }
+}
+
+let colorPresets: [(String, [Double])] = [
+    ("Blue",   [0.26, 0.52, 0.96, 1.0]),
+    ("Green",  [0.22, 0.80, 0.46, 1.0]),
+    ("Orange", [0.95, 0.61, 0.07, 1.0]),
+    ("Purple", [0.56, 0.27, 0.91, 1.0]),
+    ("Red",    [0.96, 0.26, 0.21, 1.0]),
+    ("Teal",   [0.18, 0.75, 0.82, 1.0]),
+    ("Yellow", [0.95, 0.89, 0.16, 1.0]),
+    ("White",  [1.0,  1.0,  1.0,  1.0]),
+]
+
+// MARK: - ToggleView
 
 final class ToggleView: NSView {
     static let w: CGFloat = 33, h: CGFloat = 16
@@ -86,6 +149,8 @@ final class ToggleView: NSView {
         onToggle?(isOn)
     }
 }
+
+// MARK: - SessionRowView
 
 final class SessionRowView: NSView {
     let id: String
@@ -180,6 +245,29 @@ final class SessionRowView: NSView {
     override func mouseDown(with event: NSEvent) { onClick?() }
 }
 
+// MARK: - Helper Functions
+
+func colorSwatchImage(_ rgba: [Double], size: CGFloat = 12) -> NSImage {
+    let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+        NSColor(srgbRed: CGFloat(rgba[0]), green: CGFloat(rgba[1]), blue: CGFloat(rgba[2]), alpha: CGFloat(rgba[3])).setFill()
+        NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+        return true
+    }
+    return img
+}
+
+func rgbaEqual(_ a: [Double], _ b: [Double]) -> Bool {
+    guard a.count == 4, b.count == 4 else { return false }
+    return abs(a[0]-b[0])<0.01 && abs(a[1]-b[1])<0.01 && abs(a[2]-b[2])<0.01 && abs(a[3]-b[3])<0.01
+}
+
+func rgbaToString(_ rgba: [Double]) -> String {
+    let r = Int(rgba[0]*255), g = Int(rgba[1]*255), b = Int(rgba[2]*255), a = Int(rgba[3]*100)
+    return "\(r),\(g),\(b) (\(a)%)"
+}
+
+// MARK: - StatusController
+
 final class StatusController: NSObject, NSMenuDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let stateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".config/opencode/statusbar/state.d")
@@ -228,15 +316,180 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1)
 
+    // MARK: Config
+
+    var loadedConfig = SBConfig()
+    var configMTime: Date?
+    var currentColorKey: String?
+    var cachedCustomIcon: NSImage?
+    var cachedCustomIconPath: String?
+
+    var configPath: String {
+        (stateDir as NSString).deletingLastPathComponent + "/config.json"
+    }
+
+    func loadConfig() {
+        let path = configPath
+        guard FileManager.default.fileExists(atPath: path),
+              let data = FileManager.default.contents(atPath: path),
+              let config = try? JSONDecoder().decode(SBConfig.self, from: data) else {
+            loadedConfig = SBConfig()
+            return
+        }
+        loadedConfig = config
+    }
+
+    func saveConfig() {
+        let path = configPath
+        let dir = (path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(loadedConfig) else { return }
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
+    func reloadConfigIfNeeded() {
+        let path = configPath
+        guard FileManager.default.fileExists(atPath: path),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let m = attrs[.modificationDate] as? Date else { return }
+        if configMTime != m {
+            configMTime = m
+            loadConfig()
+            applyConfig()
+        }
+    }
+
+    func applyConfig() {
+        cachedCustomIcon = nil
+        cachedCustomIconPath = nil
+        evaluate()
+    }
+
+    func configColor(_ key: String) -> [Double]? {
+        guard let c = loadedConfig.colors else { return nil }
+        switch key {
+        case "thinking":   return c.thinking
+        case "idle":       return c.idle
+        case "permission": return c.permission
+        case "tool":       return c.tool
+        default:           return nil
+        }
+    }
+
+    func setConfigColor(_ key: String, _ rgba: [Double]) {
+        if loadedConfig.colors == nil { loadedConfig.colors = SBConfig.ColorConfig() }
+        switch key {
+        case "thinking":   loadedConfig.colors?.thinking = rgba
+        case "idle":       loadedConfig.colors?.idle = rgba
+        case "permission": loadedConfig.colors?.permission = rgba
+        case "tool":       loadedConfig.colors?.tool = rgba
+        default:           break
+        }
+    }
+
+    func resetConfigColor(_ key: String) {
+        guard loadedConfig.colors != nil else { return }
+        switch key {
+        case "thinking":   loadedConfig.colors?.thinking = nil
+        case "idle":       loadedConfig.colors?.idle = nil
+        case "permission": loadedConfig.colors?.permission = nil
+        case "tool":       loadedConfig.colors?.tool = nil
+        default:           break
+        }
+    }
+
+    func effectiveColor(for key: String) -> NSColor? {
+        if let rgba = configColor(key) {
+            return NSColor(srgbRed: CGFloat(rgba[0]), green: CGFloat(rgba[1]), blue: CGFloat(rgba[2]), alpha: CGFloat(rgba[3]))
+        }
+        switch key {
+        case "permission": return amber
+        default:           return nil
+        }
+    }
+
+    func configLabel(_ key: String) -> String? {
+        guard let l = loadedConfig.labels else { return nil }
+        switch key {
+        case "thinking":   return l.thinking
+        case "waiting":    return l.waiting
+        case "permission": return l.permission
+        case "idle":       return l.idle
+        case "done":       return l.done
+        default:           return nil
+        }
+    }
+
+    func setConfigLabel(_ key: String, _ value: String) {
+        if loadedConfig.labels == nil { loadedConfig.labels = SBConfig.LabelConfig() }
+        switch key {
+        case "thinking":   loadedConfig.labels?.thinking = value
+        case "waiting":    loadedConfig.labels?.waiting = value
+        case "permission": loadedConfig.labels?.permission = value
+        case "idle":       loadedConfig.labels?.idle = value
+        case "done":       loadedConfig.labels?.done = value
+        default:           break
+        }
+    }
+
+    func defaultLabel(for key: String) -> String {
+        switch key {
+        case "thinking":   return "Thinking…"
+        case "waiting":    return "Waiting permission"
+        case "permission": return "Waiting permission"
+        case "idle":       return "Idle"
+        case "done":       return "Done"
+        default:           return ""
+        }
+    }
+
+    func customIconImage() -> NSImage? {
+        guard let path = loadedConfig.icon?.path, !path.isEmpty,
+              FileManager.default.fileExists(atPath: path) else { return nil }
+        if path == cachedCustomIconPath, let cached = cachedCustomIcon { return cached }
+        guard let img = NSImage(contentsOfFile: path) else { return nil }
+        let targetSize = CGFloat(loadedConfig.icon?.size ?? 18)
+        let resized = NSImage(size: NSSize(width: targetSize, height: targetSize), flipped: false) { rect in
+            img.draw(in: rect)
+            return true
+        }
+        resized.isTemplate = true
+        cachedCustomIcon = resized
+        cachedCustomIconPath = path
+        return resized
+    }
+
     var animStyle = AnimStyle.block
     var showTimer = false
     var playCompletionSound = false
-    lazy var completionSound: NSSound? = {
-        guard let p = Bundle.main.path(forResource: "completion", ofType: "mp3"),
-              let s = NSSound(contentsOfFile: p, byReference: true) else { return nil }
-        s.volume = 0.7
-        return s
-    }()
+    var audioPlayer: AVAudioPlayer?
+
+    func playCompletionChime() {
+        guard playCompletionSound else { return }
+        do {
+            if let path = loadedConfig.sound?.path, !path.isEmpty,
+               FileManager.default.fileExists(atPath: path) {
+                audioPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+            } else if let path = Bundle.main.path(forResource: "completion", ofType: "mp3") {
+                audioPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+            }
+            audioPlayer?.volume = 1.0
+            audioPlayer?.play()
+        } catch {}
+    }
+
+    @objc func testSound() {
+        do {
+            if let path = loadedConfig.sound?.path, !path.isEmpty,
+               FileManager.default.fileExists(atPath: path) {
+                audioPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+            } else if let path = Bundle.main.path(forResource: "completion", ofType: "mp3") {
+                audioPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+            }
+            audioPlayer?.volume = 1.0
+            audioPlayer?.play()
+        } catch {}
+    }
 
     // OpenCode geometric animation: blocks build/pulse
     let blockFrames: [NSImage] = {
@@ -282,25 +535,37 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     var fps: Double {
         switch animStyle {
-        case .spark: return 15
-        case .block: return 12
-        case .term:  return Double(termGlyphs.count * termSub) / termCycle
+        case .spark:  return 15
+        case .block:  return 12
+        case .term:   return Double(termGlyphs.count * termSub) / termCycle
+        case .bounce: return 20
+        case .pulse:  return 15
+        case .dots:   return 8
         }
     }
     var frameCount: Int {
         switch animStyle {
-        case .spark: return sparkFrameCount
-        case .block: return blockFrames.count
-        case .term:  return termGlyphs.count * termSub
+        case .spark:  return sparkFrameCount
+        case .block:  return blockFrames.count
+        case .term:   return termGlyphs.count * termSub
+        case .bounce: return 16
+        case .pulse:  return 20
+        case .dots:   return 12
         }
     }
 
+    // MARK: Init
+
     override init() {
         super.init()
+        loadConfig()
         let d = UserDefaults.standard
         if d.object(forKey: "showTimer") != nil { showTimer = d.bool(forKey: "showTimer") }
         if d.object(forKey: "completionSound") != nil { playCompletionSound = d.bool(forKey: "completionSound") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
+        // config overrides UserDefaults
+        if let v = loadedConfig.display?.showTimer { showTimer = v }
+        if let v = loadedConfig.display?.hideIdleAfter { d.set(v, forKey: "hideIdleAfter") }
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
@@ -360,8 +625,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     var currentVersion: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0" }
-    let releaseAPIURL = "https://api.github.com/repos/anomalyco/opencode-status-bar/releases/latest"
-    let releasePageURL = "https://github.com/anomalyco/opencode-status-bar/releases/latest"
+    let releaseAPIURL = "https://api.github.com/repos/aacassandra/opencode-status-bar/releases/latest"
+    let releasePageURL = "https://github.com/aacassandra/opencode-status-bar/releases/latest"
 
     func checkForUpdate() {
         let d = UserDefaults.standard
@@ -394,7 +659,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if let url = URL(string: releasePageURL) { NSWorkspace.shared.open(url) }
     }
 
-    // MARK: menu
+    // MARK: Menu
 
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
@@ -430,9 +695,21 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        populateMenu(menu)
+    }
+
+    func populateMenu(_ menu: NSMenu) {
+        let cfg = uiConfig()
         menu.removeAllItems()
         checkForUpdate()
 
+        // --- About
+        let aboutItem = NSMenuItem(title: "About OpenCode Status Bar", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+        menu.addItem(.separator())
+
+        // --- Sessions
         sessionMenuItems.removeAll()
         let now = Date().timeIntervalSince1970
         let allOrdered = sessions.values.sorted { $0.ts > $1.ts }
@@ -453,7 +730,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             menu.addItem(header("Sessions"))
             for s in visible {
                 let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
-                let view = SessionRowView(id: s.id, width: CGFloat(uiConfig()["boxWidth"] ?? 300))
+                let view = SessionRowView(id: s.id, width: CGFloat(cfg["boxWidth"] ?? 300))
                 let sid = s.id, ep = s.entrypoint, tp = s.termProgram
                 view.onClick = { [weak self] in menu.cancelTracking(); self?.openSession(sid, entrypoint: ep, termProgram: tp) }
                 configureSessionRow(view, s, eff: eff)
@@ -471,21 +748,35 @@ final class StatusController: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
+        // --- Options
         menu.addItem(header("Options"))
-
         menu.addItem(toggleRow(title: "Show timer", isOn: showTimer) { [weak self] on in
             self?.showTimer = on
             UserDefaults.standard.set(on, forKey: "showTimer")
+            if self?.loadedConfig.display == nil { self?.loadedConfig.display = SBConfig.DisplayConfig() }
+            self?.loadedConfig.display?.showTimer = on
+            self?.saveConfig()
             self?.applyTitle()
         })
         menu.addItem(toggleRow(title: "Completion sound (1m+)", isOn: playCompletionSound) { [weak self] on in
-            self?.playCompletionSound = on
+            guard let self = self else { return }
+            self.playCompletionSound = on
             UserDefaults.standard.set(on, forKey: "completionSound")
+            if let menu = self.statusItem.menu {
+                self.populateMenu(menu)
+            }
         })
+        if playCompletionSound {
+            let testSoundItem = NSMenuItem(title: "Test Sound", action: #selector(testSound), keyEquivalent: "")
+            testSoundItem.target = self
+            menu.addItem(testSoundItem)
+        }
 
         let animParent = NSMenuItem(title: "Animation Style", action: nil, keyEquivalent: "")
         let animSub = NSMenu()
-        for (style, name) in [(AnimStyle.spark, "OpenCode Spark"), (AnimStyle.block, "Block Build"), (AnimStyle.term, "Terminal Pulse")] {
+        for (style, name) in [(AnimStyle.spark, "OpenCode Spark"), (AnimStyle.block, "Block Build"),
+                               (AnimStyle.term, "Terminal Pulse"), (AnimStyle.bounce, "Bounce"),
+                               (AnimStyle.pulse, "Pulse"), (AnimStyle.dots, "Dots")] {
             let it = NSMenuItem(title: name, action: #selector(chooseStyle(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = style.rawValue
@@ -507,6 +798,82 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
         hideParent.submenu = hideSub
         menu.addItem(hideParent)
+
+        // --- Customize
+        menu.addItem(.separator())
+        menu.addItem(header("Customize"))
+
+        let iconItem = NSMenuItem(title: "Change Icon…", action: #selector(pickIcon), keyEquivalent: "")
+        iconItem.target = self
+        menu.addItem(iconItem)
+
+        let soundItem = NSMenuItem(title: "Change Sound…", action: #selector(pickSound), keyEquivalent: "")
+        soundItem.target = self
+        menu.addItem(soundItem)
+
+        // Colors submenu
+        let colorsParent = NSMenuItem(title: "Colors", action: nil, keyEquivalent: "")
+        let colorsSub = NSMenu()
+        for key in ["thinking", "idle", "permission", "tool"] {
+            let cap = key.capitalized
+            let sub = NSMenuItem(title: cap, action: nil, keyEquivalent: "")
+            let subMenu = NSMenu()
+            let current = configColor(key)
+            for (name, rgba) in colorPresets {
+                let it = NSMenuItem(title: name, action: #selector(setColor(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = (key as NSString).appending("|\(rgba[0]),\(rgba[1]),\(rgba[2]),\(rgba[3])")
+                it.image = colorSwatchImage(rgba)
+                if let c = current, rgbaEqual(c, rgba) { it.state = .on }
+                subMenu.addItem(it)
+            }
+            subMenu.addItem(.separator())
+            let custom = NSMenuItem(title: "Custom…", action: #selector(openColorPanel(_:)), keyEquivalent: "")
+            custom.target = self
+            custom.representedObject = key
+            if let c = current {
+                let allPresets = colorPresets.contains { rgbaEqual($0.1, c) }
+                if !allPresets { custom.state = .on }
+            }
+            subMenu.addItem(custom)
+            let reset = NSMenuItem(title: "Reset", action: #selector(resetColor(_:)), keyEquivalent: "")
+            reset.target = self
+            reset.representedObject = key
+            subMenu.addItem(reset)
+            sub.submenu = subMenu
+            colorsSub.addItem(sub)
+        }
+        colorsParent.submenu = colorsSub
+        menu.addItem(colorsParent)
+
+        // Labels submenu
+        let labelsParent = NSMenuItem(title: "Labels", action: nil, keyEquivalent: "")
+        let labelsSub = NSMenu()
+        for key in ["thinking", "waiting", "idle", "done"] {
+            let label = configLabel(key) ?? defaultLabel(for: key)
+            let it = NSMenuItem(title: "\(key.capitalized): \"\(label)\"", action: #selector(editLabel(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = key
+            labelsSub.addItem(it)
+        }
+        labelsParent.submenu = labelsSub
+        menu.addItem(labelsParent)
+
+        // Launch at Login
+        let launchItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        launchItem.target = self
+        launchItem.state = launchAtLoginEnabled() ? .on : .off
+        menu.addItem(launchItem)
+
+        // Copy Status
+        let copyItem = NSMenuItem(title: "Copy Status", action: #selector(copyStatus), keyEquivalent: "c")
+        copyItem.target = self
+        menu.addItem(copyItem)
+
+        // Reset All
+        let resetAll = NSMenuItem(title: "Reset All Customizations", action: #selector(resetAllConfig), keyEquivalent: "")
+        resetAll.target = self
+        menu.addItem(resetAll)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Version \(currentVersion)", action: nil, keyEquivalent: ""))
@@ -554,6 +921,262 @@ final class StatusController: NSObject, NSMenuDelegate {
         return item
     }
 
+    // MARK: Color Picker Actions
+
+    @objc func setColor(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let sep = raw.firstIndex(of: "|") else { return }
+        let key = String(raw[..<sep])
+        let rgbaStr = String(raw[raw.index(after: sep)...])
+        let parts = rgbaStr.split(separator: ",").compactMap { Double($0) }
+        guard parts.count == 4 else { return }
+        setConfigColor(key, parts)
+        saveConfig()
+        applyConfig()
+    }
+
+    @objc func openColorPanel(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        currentColorKey = key
+        let panel = NSColorPanel.shared
+        panel.setTarget(self)
+        panel.setAction(#selector(colorPanelChanged(_:)))
+        panel.isContinuous = true
+        if let rgba = configColor(key) {
+            panel.color = NSColor(srgbRed: CGFloat(rgba[0]), green: CGFloat(rgba[1]), blue: CGFloat(rgba[2]), alpha: CGFloat(rgba[3]))
+        } else {
+            panel.color = key == "permission" ? amber : NSColor.controlAccentColor
+        }
+        panel.orderFront(nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(colorPanelClosed), name: NSWindow.willCloseNotification, object: panel)
+    }
+
+    @objc func colorPanelChanged(_ sender: NSColorPanel) {
+        guard let key = currentColorKey else { return }
+        let color = sender.color.usingColorSpace(.sRGB) ?? sender.color
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let rgba = [Double(r), Double(g), Double(b), Double(a)]
+        setConfigColor(key, rgba)
+        saveConfig()
+        applyConfig()
+    }
+
+    @objc func colorPanelClosed() {
+        currentColorKey = nil
+    }
+
+    @objc func resetColor(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        resetConfigColor(key)
+        saveConfig()
+        applyConfig()
+    }
+
+    // MARK: Icon / Sound Pickers
+
+    @objc func pickIcon() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, UTType(filenameExtension: "icns")].compactMap { $0 }
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "Choose Status Bar Icon"
+        panel.message = "Select a PNG or ICNS image (will be resized to 18×18)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if loadedConfig.icon == nil { loadedConfig.icon = SBConfig.IconConfig() }
+        loadedConfig.icon?.path = url.path
+        saveConfig()
+        applyConfig()
+    }
+
+    @objc func pickSound() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.mp3, .wav, UTType(filenameExtension: "caf"), UTType(filenameExtension: "aiff"), UTType(filenameExtension: "m4a")].compactMap { $0 }
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "Choose Completion Sound"
+        panel.message = "Select an audio file for the completion chime"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if loadedConfig.sound == nil { loadedConfig.sound = SBConfig.SoundConfig() }
+        loadedConfig.sound?.path = url.path
+        saveConfig()
+        applyConfig()
+    }
+
+    // MARK: Label Editing
+
+    @objc func editLabel(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        let current = configLabel(key) ?? defaultLabel(for: key)
+        let alert = NSAlert()
+        alert.messageText = "Edit \"\(key.capitalized)\" Label"
+        alert.informativeText = "Enter a custom label for the \(key) state:"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = current
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let value = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return }
+        setConfigLabel(key, value)
+        saveConfig()
+        applyConfig()
+    }
+
+    // MARK: Launch at Login
+
+    func launchAtLoginPlist() -> String {
+        NSHomeDirectory() + "/Library/LaunchAgents/com.local.opencodestatusbar.plist"
+    }
+
+    func launchAtLoginEnabled() -> Bool {
+        FileManager.default.fileExists(atPath: launchAtLoginPlist())
+    }
+
+    func setLaunchAtLogin(_ enable: Bool) {
+        let path = launchAtLoginPlist()
+        if enable {
+            let bundlePath = Bundle.main.bundlePath
+            let plist: [String: Any] = [
+                "Label": "com.local.opencodestatusbar",
+                "ProgramArguments": ["/usr/bin/open", bundlePath as NSString],
+                "RunAtLoad": true,
+                "KeepAlive": false,
+            ]
+            guard let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) else { return }
+            try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+    }
+
+    @objc func toggleLaunchAtLogin() {
+        let enabled = launchAtLoginEnabled()
+        setLaunchAtLogin(!enabled)
+    }
+
+    @objc func copyStatus() {
+        guard let lead = sessions.values.max(by: { a, b in
+            let pa = priority(of: a.eff), pb = priority(of: b.eff)
+            return pa == pb ? a.ts < b.ts : pa < pb
+        }) else { return }
+        let now = Date().timeIntervalSince1970
+        let eff = lead.eff.isEmpty ? effectiveState(lead, now: now) : lead.eff
+        let text = statusText(lead, eff: eff)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc func resetAllConfig() {
+        let path = configPath
+        try? FileManager.default.removeItem(atPath: path)
+        configMTime = nil
+        loadConfig()
+        applyConfig()
+    }
+
+    // MARK: About Window
+
+    @objc func showAbout() {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 300),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.center()
+        panel.title = ""
+        panel.isFloatingPanel = true
+        panel.titlebarAppearsTransparent = true
+
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 300))
+
+        let iconView = NSImageView(frame: NSRect(x: 140, y: 220, width: 40, height: 40))
+        iconView.image = NSApp.applicationIconImage ?? statusItem.button?.image
+        iconView.wantsLayer = true
+        iconView.layer?.cornerRadius = 8
+        iconView.layer?.masksToBounds = true
+        content.addSubview(iconView)
+
+        let nameField = NSTextField(labelWithString: "OpenCode Status Bar")
+        nameField.font = .boldSystemFont(ofSize: 15)
+        nameField.alignment = .center
+        nameField.frame = NSRect(x: 0, y: 190, width: 320, height: 20)
+        content.addSubview(nameField)
+
+        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.1"
+        let verField = NSTextField(labelWithString: "Version \(ver)")
+        verField.font = .systemFont(ofSize: 12)
+        verField.textColor = .secondaryLabelColor
+        verField.alignment = .center
+        verField.frame = NSRect(x: 0, y: 170, width: 320, height: 18)
+        content.addSubview(verField)
+
+        let sep1 = NSBox(frame: NSRect(x: 40, y: 150, width: 240, height: 1))
+        sep1.boxType = .separator
+        content.addSubview(sep1)
+
+        let contribLabel = NSTextField(labelWithString: "Contributors")
+        contribLabel.font = .boldSystemFont(ofSize: 12)
+        contribLabel.alignment = .center
+        contribLabel.frame = NSRect(x: 0, y: 130, width: 320, height: 18)
+        content.addSubview(contribLabel)
+
+        let linkFont = NSFont.systemFont(ofSize: 12)
+        let contributorData = [("ardith666", "https://github.com/ardith666"), ("afif cassandra", "https://github.com/aacassandra")]
+        for (i, (name, urlStr)) in contributorData.enumerated() {
+            let btn = URLButton(title: name, target: self, action: #selector(openContributorURL(_:)))
+            btn.setButtonType(NSButton.ButtonType.momentaryPushIn)
+            btn.isBordered = false
+            btn.font = linkFont
+            btn.frame = NSRect(x: 60, y: Double(86 - i * 22), width: 200, height: 20)
+            btn.contentTintColor = NSColor.linkColor
+            btn.refusesFirstResponder = true
+            let attrTitle = NSAttributedString(string: name, attributes: [
+                .foregroundColor: NSColor.linkColor,
+                .font: linkFont,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ])
+            btn.attributedTitle = attrTitle
+            btn.url = URL(string: urlStr)
+            content.addSubview(btn)
+        }
+
+        let sep2 = NSBox(frame: NSRect(x: 40, y: 58, width: 240, height: 1))
+        sep2.boxType = .separator
+        content.addSubview(sep2)
+
+        let licenseField = NSTextField(labelWithString: "License: MIT")
+        licenseField.font = .systemFont(ofSize: 11)
+        licenseField.textColor = .tertiaryLabelColor
+        licenseField.alignment = .center
+        licenseField.frame = NSRect(x: 0, y: 32, width: 320, height: 16)
+        content.addSubview(licenseField)
+
+        let closeBtn = NSButton(title: "Close", target: panel, action: #selector(NSWindow.close))
+        closeBtn.setFrameOrigin(NSPoint(x: 130, y: 8))
+        closeBtn.bezelStyle = .push
+        content.addSubview(closeBtn)
+
+        panel.contentView = content
+        panel.level = .modalPanel
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    final class URLButton: NSButton {
+        var url: URL?
+    }
+
+    @objc func openContributorURL(_ sender: NSButton) {
+        guard let btn = sender as? URLButton, let url = btn.url else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    // MARK: Session Helpers
+
     func sessionMenuLine(_ s: Session) -> String {
         let now = Date().timeIntervalSince1970
         let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
@@ -574,7 +1197,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func configureSessionRow(_ v: SessionRowView, _ s: Session, eff: String) {
         let cfg = uiConfig()
         let now = Date().timeIntervalSince1970
-        let nameMax = Int(cfg["nameMax"] ?? 16)
+        let nameMax = loadedConfig.display?.nameMax ?? Int(cfg["nameMax"] ?? 16)
         let working = (eff == "thinking" || eff == "tool") && s.startedAt > 0
         let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
         let tag = surfaceTag(s.entrypoint)
@@ -590,9 +1213,14 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func statusText(_ s: Session, eff: String) -> String {
         switch eff {
-        case "permission":       return "Waiting permission"
-        case "thinking", "tool": return workingLabel(s)
-        default:                 return s.state == "done" ? "Done" : "Idle"
+        case "permission":
+            return configLabel("permission") ?? configLabel("waiting") ?? "Waiting permission"
+        case "thinking", "tool":
+            return workingLabel(s)
+        default:
+            let idleLabel = configLabel("idle") ?? "Idle"
+            let doneLabel = configLabel("done") ?? "Done"
+            return s.state == "done" ? doneLabel : idleLabel
         }
     }
 
@@ -632,9 +1260,11 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func sessionSymbol(_ s: Session, eff: String) -> NSImage? {
         switch eff {
-        case "permission":       return symbolImage("exclamationmark.circle.fill", tint: amber)
+        case "permission":
+            let tint = effectiveColor(for: "permission") ?? amber
+            return symbolImage("exclamationmark.circle.fill", tint: tint)
         case "thinking", "tool": return rotatedSpinner(spinAngle)
-        default:                 return restingCaret
+        default:                 return restingIcon(color: nil)
         }
     }
 
@@ -704,6 +1334,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func workingLabel(_ s: Session) -> String {
+        if let custom = configLabel("thinking"), !custom.isEmpty { return custom }
         if !s.label.isEmpty { return s.label }
         return s.state == "tool" ? "Working…" : "Thinking…"
     }
@@ -742,6 +1373,9 @@ final class StatusController: NSObject, NSMenuDelegate {
     @objc func chooseHideIdle(_ sender: NSMenuItem) {
         guard let secs = sender.representedObject as? Double else { return }
         UserDefaults.standard.set(secs, forKey: "hideIdleAfter")
+        if loadedConfig.display == nil { loadedConfig.display = SBConfig.DisplayConfig() }
+        loadedConfig.display?.hideIdleAfter = secs
+        saveConfig()
     }
 
     @objc func chooseStyle(_ sender: NSMenuItem) {
@@ -753,9 +1387,10 @@ final class StatusController: NSObject, NSMenuDelegate {
         evaluate()
     }
 
-    // MARK: state polling
+    // MARK: State Polling
 
     func tick() {
+        reloadConfigIfNeeded()
         checkLifecycle()
         reloadSessions()
         evaluate()
@@ -805,7 +1440,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             if soundEdgeDone(s, now: now) { chime = true }
         }
         for id in Array(soundPrev.keys) where sessions[id] == nil { soundPrev[id] = nil; turnStart[id] = nil }
-        if chime, playCompletionSound { completionSound?.play() }
+        if chime { playCompletionChime() }
 
         let lead = sessions.values.max { a, b in
             let pa = priority(of: a.eff), pb = priority(of: b.eff)
@@ -816,7 +1451,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let lead = lead else { renderResting(); return }
         switch lead.eff {
         case "permission":
-            render(label: statusText(lead, eff: lead.eff), color: amber, animate: false, startedAt: 0, dot: true)
+            render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: "permission") ?? amber, animate: false, startedAt: 0, dot: true)
         case "thinking", "tool":
             render(label: statusText(lead, eff: lead.eff), color: nil, animate: true, startedAt: lead.startedAt)
         default:
@@ -824,7 +1459,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    func renderResting() { render(label: "", color: nil, animate: false, startedAt: 0) }
+    func renderResting() {
+        if let custom = customIconImage() {
+            statusItem.button?.image = custom
+            statusItem.button?.title = ""
+            return
+        }
+        render(label: "", color: nil, animate: false, startedAt: 0)
+    }
 
     func effectiveState(_ s: Session, now: Double) -> String {
         if s.state == "thinking" || s.state == "tool" || s.state == "permission" {
@@ -839,15 +1481,17 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func soundEdgeDone(_ s: Session, now: Double) -> Bool {
         let prev = soundPrev[s.id] ?? ""
-        if s.state == "thinking" || s.state == "tool", s.startedAt > 0 { turnStart[s.id] = s.startedAt }
+        if s.eff == "thinking" || s.eff == "tool", s.startedAt > 0 { turnStart[s.id] = s.startedAt }
         var edge = false
-        if s.state == "done", prev != "done", let st = turnStart[s.id], st > 0, now - st >= 60 { edge = true }
-        if s.state == "done" { turnStart[s.id] = 0 }
-        soundPrev[s.id] = s.state
+        let isNowIdle = s.eff == "idle" || s.eff.isEmpty
+        let wasBusy = prev == "thinking" || prev == "tool"
+        if wasBusy && isNowIdle, let st = turnStart[s.id], st > 0, now - st >= 60 { edge = true }
+        if isNowIdle { turnStart[s.id] = 0 }
+        soundPrev[s.id] = s.eff
         return edge
     }
 
-    // MARK: self-quit lifecycle
+    // MARK: Lifecycle
 
     func opencodeDesktopRunning() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == opencodeDesktopBundleID }
@@ -865,7 +1509,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func checkLifecycle() {
-        // Status bar app stays alive — no self-quit
+        // Status bar app stays alive
     }
 
     func lastLine(ofFileAt path: String) -> String? {
@@ -890,7 +1534,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         }.map(String.init)
     }
 
-    // MARK: render
+    // MARK: Render
 
     func render(label: String, color: NSColor?, animate: Bool, startedAt: Double, dot: Bool = false) {
         guard let button = statusItem.button else { return }
@@ -930,6 +1574,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func restingIcon(color: NSColor?) -> NSImage? {
+        if let custom = customIconImage() { return custom }
         let side: CGFloat = 18
         let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
@@ -970,8 +1615,16 @@ final class StatusController: NSObject, NSMenuDelegate {
             let glyphIdx = (frame / termSub) % termGlyphs.count
             let progress = CGFloat(frame % termSub) / CGFloat(termSub)
             return animatedGlyph(glyphIdx, progress: progress, color: color)
+        case .bounce:
+            return bounceIcon(frame: frame, color: color)
+        case .pulse:
+            return pulseIcon(frame: frame, color: color)
+        case .dots:
+            return dotsIcon(frame: frame, color: color)
         }
     }
+
+    // MARK: Spark Animation
 
     func sparkIcon(frame: Int, color: NSColor?) -> NSImage? {
         let side: CGFloat = 18
@@ -1012,6 +1665,77 @@ final class StatusController: NSObject, NSMenuDelegate {
         return img
     }
 
+    // MARK: Bounce Animation
+
+    func bounceIcon(frame: Int, color: NSColor?) -> NSImage? {
+        let side: CGFloat = 18
+        let total = 16
+        let progress = CGFloat(frame % total) / CGFloat(total)
+        let amplitude: CGFloat = 4.5
+        let yOffset = sin(progress * .pi * 2) * amplitude
+        let dotR: CGFloat = 3
+
+        let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            let cx = rect.midX
+            let cy = rect.midY + yOffset
+            NSColor.black.setFill()
+            ctx.fillEllipse(in: CGRect(x: cx - dotR, y: cy - dotR, width: dotR * 2, height: dotR * 2))
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
+    // MARK: Pulse Animation
+
+    func pulseIcon(frame: Int, color: NSColor?) -> NSImage? {
+        let side: CGFloat = 18
+        let total = 20
+        let progress = CGFloat(frame % total) / CGFloat(total)
+        let scale: CGFloat = 0.3 + sin(progress * .pi) * 0.5
+        let maxR: CGFloat = 6
+        let r = maxR * scale
+        let alpha: CGFloat = 0.3 + sin(progress * .pi) * 0.7
+
+        let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            let cx = rect.midX, cy = rect.midY
+            NSColor.black.withAlphaComponent(alpha).setFill()
+            ctx.fillEllipse(in: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
+    // MARK: Dots Animation
+
+    func dotsIcon(frame: Int, color: NSColor?) -> NSImage? {
+        let side: CGFloat = 18
+        let total = 12
+        let phase = (frame % total) / 4
+        let dotR: CGFloat = 2
+        let spacing: CGFloat = 6
+        let baseX: CGFloat = (side - spacing * 2) / 2
+
+        let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            let cy = rect.midY
+            for i in 0..<3 {
+                let alpha: CGFloat = i == phase ? 1.0 : 0.25
+                let cx = baseX + CGFloat(i) * spacing
+                NSColor.black.withAlphaComponent(alpha).setFill()
+                ctx.fillEllipse(in: CGRect(x: cx - dotR, y: cy - dotR, width: dotR * 2, height: dotR * 2))
+            }
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
+    // MARK: Shared Helpers
+
     func resizeImage(_ img: NSImage, color: NSColor?) -> NSImage? {
         let side: CGFloat = 18
         let resized = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
@@ -1039,13 +1763,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 }
 
-// MARK: enum and app delegate
-
-enum AnimStyle: String {
-    case spark = "spark"
-    case block = "block"
-    case term = "term"
-}
+// MARK: - AppDelegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var controller: StatusController?
