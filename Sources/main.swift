@@ -1394,7 +1394,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         nameField.frame = NSRect(x: 0, y: 190, width: 320, height: 20)
         content.addSubview(nameField)
 
-        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.5"
         let verField = NSTextField(labelWithString: "Version \(ver)")
         verField.font = .systemFont(ofSize: 12)
         verField.textColor = .secondaryLabelColor
