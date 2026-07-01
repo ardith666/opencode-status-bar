@@ -1708,6 +1708,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         countPlayer?.currentTime = 0
         countPlayer?.play()
         if breakCountdown <= 0 {
+            breakCountdownTimer?.invalidate()
+            breakCountdownTimer = nil
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                 self?.hideBreak()
             }
