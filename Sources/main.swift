@@ -11,6 +11,7 @@ enum AnimStyle: String, CaseIterable {
     case bounce = "bounce"
     case pulse = "pulse"
     case dots = "dots"
+    case basic = "basic"
 }
 
 // MARK: - Config
@@ -48,6 +49,10 @@ struct SBConfig: Codable {
     }
     struct SoundConfig: Codable {
         var path: String?
+        var notifPath: String?
+        var breakOnlyPath: String?
+        var breakStartPath: String?
+        var breakCompletePath: String?
         var minDuration: Double?
     }
     struct DisplayConfig: Codable {
@@ -536,8 +541,13 @@ final class StatusController: NSObject, NSMenuDelegate {
     func playNotifChime() {
         guard playNotifSound else { return }
         do {
-            let url = URL(fileURLWithPath: "/System/Library/Sounds/Tink.aiff")
-            notifPlayer = try AVAudioPlayer(contentsOf: url)
+            if let path = loadedConfig.sound?.notifPath, !path.isEmpty,
+               FileManager.default.fileExists(atPath: path) {
+                notifPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+            } else {
+                let url = URL(fileURLWithPath: "/System/Library/Sounds/Tink.aiff")
+                notifPlayer = try AVAudioPlayer(contentsOf: url)
+            }
             notifPlayer?.volume = 1.0
             notifPlayer?.play()
         } catch {}
@@ -605,7 +615,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         case .term:   return Double(termGlyphs.count * termSub) / termCycle
         case .bounce: return 20
         case .pulse:  return 15
-        case .dots:   return 8
+        case .dots:  return 8
+        case .basic: return 20
         }
     }
     var frameCount: Int {
@@ -616,6 +627,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         case .bounce: return 16
         case .pulse:  return 20
         case .dots:   return 12
+        case .basic:  return 60
         }
     }
 
@@ -909,17 +921,6 @@ final class StatusController: NSObject, NSMenuDelegate {
                 breakDurItem.submenu = breakDurSub
                 breakSub.addItem(breakDurItem)
 
-                let breakLabelItem = NSMenuItem(title: "Customize Labels…", action: nil, keyEquivalent: "")
-                let breakLabelSub = NSMenu()
-                for (key, display) in [("breakTitle", "Title"), ("breakMessage", "Message")] {
-                    let cur = self.configLabel(key) ?? self.defaultLabel(for: key)
-                    let it = NSMenuItem(title: "\(display): \"\(cur)\"", action: #selector(self.editBreakLabel(_:)), keyEquivalent: "")
-                    it.target = self
-                    it.representedObject = key
-                    breakLabelSub.addItem(it)
-                }
-                breakLabelItem.submenu = breakLabelSub
-                breakSub.addItem(breakLabelItem)
             }
         })
         let breakIntItem = NSMenuItem(title: "Interval: \(bIntervalLabel)", action: nil, keyEquivalent: "")
@@ -951,17 +952,6 @@ final class StatusController: NSObject, NSMenuDelegate {
             breakDurItem.submenu = breakDurSub
             breakSub.addItem(breakDurItem)
 
-            let breakLabelItem = NSMenuItem(title: "Customize Labels…", action: nil, keyEquivalent: "")
-            let breakLabelSub = NSMenu()
-            for (key, display) in [("breakTitle", "Title"), ("breakMessage", "Message")] {
-                let cur = configLabel(key) ?? defaultLabel(for: key)
-                let it = NSMenuItem(title: "\(display): \"\(cur)\"", action: #selector(editBreakLabel(_:)), keyEquivalent: "")
-                it.target = self
-                it.representedObject = key
-                breakLabelSub.addItem(it)
-            }
-            breakLabelItem.submenu = breakLabelSub
-            breakSub.addItem(breakLabelItem)
         }
 
         breakParent.submenu = breakSub
@@ -971,7 +961,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         let animSub = NSMenu()
         for (style, name) in [(AnimStyle.spark, "OpenCode Spark"), (AnimStyle.block, "Block Build"),
                                (AnimStyle.term, "Terminal Pulse"), (AnimStyle.bounce, "Bounce"),
-                               (AnimStyle.pulse, "Pulse"), (AnimStyle.dots, "Dots")] {
+                               (AnimStyle.pulse, "Pulse"), (AnimStyle.dots, "Dots"),
+                               (AnimStyle.basic, "OpenCode Basic")] {
             let it = NSMenuItem(title: name, action: #selector(chooseStyle(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = style.rawValue
@@ -1010,9 +1001,29 @@ final class StatusController: NSObject, NSMenuDelegate {
         iconItem.target = self
         customizeSub.addItem(iconItem)
 
-        let soundItem = NSMenuItem(title: "Change Sound…", action: #selector(pickSound), keyEquivalent: "")
-        soundItem.target = self
-        customizeSub.addItem(soundItem)
+        let soundParent = NSMenuItem(title: "Change Sound", action: nil, keyEquivalent: "")
+        let soundSub = NSMenu()
+        let compItem = NSMenuItem(title: "Completion…", action: #selector(pickSound), keyEquivalent: "")
+        compItem.target = self
+        soundSub.addItem(compItem)
+        let notifItem = NSMenuItem(title: "Permission…", action: #selector(pickNotifSound), keyEquivalent: "")
+        notifItem.target = self
+        soundSub.addItem(notifItem)
+        soundSub.addItem(NSMenuItem.separator())
+        let btLabel = NSMenuItem(title: "Break Time", action: nil, keyEquivalent: "")
+        btLabel.isEnabled = false
+        soundSub.addItem(btLabel)
+        let breakOnlyItem = NSMenuItem(title: "Sound Only…", action: #selector(pickBreakOnlySound), keyEquivalent: "")
+        breakOnlyItem.target = self
+        soundSub.addItem(breakOnlyItem)
+        let breakStartItem = NSMenuItem(title: "Starting…", action: #selector(pickBreakStartSound), keyEquivalent: "")
+        breakStartItem.target = self
+        soundSub.addItem(breakStartItem)
+        let breakCompleteItem = NSMenuItem(title: "Completion…", action: #selector(pickBreakCompleteSound), keyEquivalent: "")
+        breakCompleteItem.target = self
+        soundSub.addItem(breakCompleteItem)
+        soundParent.submenu = soundSub
+        customizeSub.addItem(soundParent)
 
         // Colors submenu
         let colorsParent = NSMenuItem(title: "Colors", action: nil, keyEquivalent: "")
@@ -1203,6 +1214,62 @@ final class StatusController: NSObject, NSMenuDelegate {
         applyConfig()
     }
 
+    @objc func pickNotifSound() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.mp3, .wav, UTType(filenameExtension: "caf"), UTType(filenameExtension: "aiff"), UTType(filenameExtension: "m4a")].compactMap { $0 }
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "Choose Permission Sound"
+        panel.message = "Select an audio file for the permission notification"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if loadedConfig.sound == nil { loadedConfig.sound = SBConfig.SoundConfig() }
+        loadedConfig.sound?.notifPath = url.path
+        saveConfig()
+        applyConfig()
+    }
+
+    @objc func pickBreakOnlySound() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.mp3, .wav, UTType(filenameExtension: "caf"), UTType(filenameExtension: "aiff"), UTType(filenameExtension: "m4a")].compactMap { $0 }
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "Choose Break Sound Only"
+        panel.message = "Select an audio file for the break countdown tick"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if loadedConfig.sound == nil { loadedConfig.sound = SBConfig.SoundConfig() }
+        loadedConfig.sound?.breakOnlyPath = url.path
+        saveConfig()
+        applyConfig()
+    }
+
+    @objc func pickBreakStartSound() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.mp3, .wav, UTType(filenameExtension: "caf"), UTType(filenameExtension: "aiff"), UTType(filenameExtension: "m4a")].compactMap { $0 }
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "Choose Break Starting Sound"
+        panel.message = "Select an audio file for when the break overlay appears"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if loadedConfig.sound == nil { loadedConfig.sound = SBConfig.SoundConfig() }
+        loadedConfig.sound?.breakStartPath = url.path
+        saveConfig()
+        applyConfig()
+    }
+
+    @objc func pickBreakCompleteSound() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.mp3, .wav, UTType(filenameExtension: "caf"), UTType(filenameExtension: "aiff"), UTType(filenameExtension: "m4a")].compactMap { $0 }
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "Choose Break Completion Sound"
+        panel.message = "Select an audio file for when the break finishes"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if loadedConfig.sound == nil { loadedConfig.sound = SBConfig.SoundConfig() }
+        loadedConfig.sound?.breakCompletePath = url.path
+        saveConfig()
+        applyConfig()
+    }
+
     // MARK: Label Editing
 
     @objc func editLabel(_ sender: NSMenuItem) {
@@ -1258,6 +1325,14 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     @objc func resetAllConfig() {
+        // delete uploaded sound files
+        if let s = loadedConfig.sound {
+            for p in [s.path, s.notifPath, s.breakOnlyPath, s.breakStartPath, s.breakCompletePath] {
+                if let p, !p.isEmpty, FileManager.default.fileExists(atPath: p) {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+        }
         let path = configPath
         try? FileManager.default.removeItem(atPath: path)
         configMTime = nil
@@ -1658,7 +1733,11 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func playBreakAudio() {
-        if breakAudioPlayer == nil {
+        if let path = loadedConfig.sound?.breakOnlyPath, !path.isEmpty,
+           FileManager.default.fileExists(atPath: path) {
+            breakAudioPlayer = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+            breakAudioPlayer?.prepareToPlay()
+        } else if breakAudioPlayer == nil {
             if let path = Bundle.main.path(forResource: "tic-toc", ofType: "wav") {
                 breakAudioPlayer = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
                 breakAudioPlayer?.prepareToPlay()
@@ -1680,7 +1759,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         breakCountdown = Int(breakDuration)
         if breakCountdown < 1 { breakCountdown = 1 }
 
-        NSSound(named: "Tink")?.play()
+        if let path = loadedConfig.sound?.breakStartPath, !path.isEmpty,
+           FileManager.default.fileExists(atPath: path),
+           let p = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path)) {
+            p.volume = 1.0
+            p.play()
+        } else {
+            NSSound(named: "Tink")?.play()
+        }
 
         countPlayer?.stop()
         if let path = Bundle.main.path(forResource: "count", ofType: "mp3") {
@@ -1736,7 +1822,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         breakWindows.forEach { $0.orderOut(nil) }
         breakWindows.removeAll()
         countPlayer?.stop()
-        playCompletionChime()
+        if let path = loadedConfig.sound?.breakCompletePath, !path.isEmpty,
+           FileManager.default.fileExists(atPath: path),
+           let p = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path)) {
+            p.volume = 1.0
+            p.play()
+        } else {
+            playCompletionChime()
+        }
         startBreakTimer()
     }
 
@@ -1757,26 +1850,6 @@ final class StatusController: NSObject, NSMenuDelegate {
             breakCountdownTimer = nil
             hideBreak()
         }
-    }
-
-    @objc func editBreakLabel(_ sender: NSMenuItem) {
-        guard let key = sender.representedObject as? String else { return }
-        let displayName = key == "breakTitle" ? "Break Title" : "Break Message"
-        let current = configLabel(key) ?? defaultLabel(for: key)
-        let alert = NSAlert()
-        alert.messageText = "Edit \(displayName)"
-        alert.informativeText = "Enter a custom \(displayName.lowercased()):"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = current
-        alert.accessoryView = field
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let value = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !value.isEmpty else { return }
-        setConfigLabel(key, value)
-        saveConfig()
-        if let menu = statusItem.menu { populateMenu(menu) }
     }
 
     // MARK: State Polling
@@ -2031,6 +2104,8 @@ final class StatusController: NSObject, NSMenuDelegate {
             return pulseIcon(frame: frame, color: color)
         case .dots:
             return dotsIcon(frame: frame, color: color)
+        case .basic:
+            return basicIcon(frame: frame, color: color)
         }
     }
 
@@ -2141,6 +2216,50 @@ final class StatusController: NSObject, NSMenuDelegate {
             return true
         }
         img.isTemplate = true
+        return img
+    }
+
+    // MARK: Basic Animation
+
+    func basicIcon(frame: Int, color: NSColor?) -> NSImage? {
+        let side: CGFloat = 18
+        let total = 60
+        let progress = CGFloat(frame % total) / CGFloat(total)
+        let t = sin(progress * .pi)
+        let minSplit: CGFloat = 0.3
+        let maxSplit: CGFloat = 0.7
+        let splitRatio = minSplit + (maxSplit - minSplit) * t
+
+        let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+
+            let isDark = NSApp.effectiveAppearance.name == .darkAqua
+
+            let bgColor = (isDark ? NSColor.black : NSColor(white: 0.949, alpha: 1)).cgColor
+            let topColor = (isDark ? NSColor(white: 0.961, alpha: 1) : NSColor(white: 0.067, alpha: 1)).cgColor
+            let bottomColor = (isDark ? NSColor(white: 0.741, alpha: 1) : NSColor(white: 0.561, alpha: 1)).cgColor
+
+            let inset: CGFloat = 3
+            let container = rect.insetBy(dx: inset, dy: inset)
+            let cornerRadius: CGFloat = 4
+
+            let path = CGPath(roundedRect: container, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            ctx.addPath(path)
+            ctx.clip()
+
+            ctx.setFillColor(bgColor)
+            ctx.fill(container)
+
+            let splitY = container.minY + container.height * splitRatio
+
+            ctx.setFillColor(topColor)
+            ctx.fill(CGRect(x: container.minX, y: splitY, width: container.width, height: container.maxY - splitY))
+
+            ctx.setFillColor(bottomColor)
+            ctx.fill(CGRect(x: container.minX, y: container.minY, width: container.width, height: splitY - container.minY))
+
+            return true
+        }
         return img
     }
 

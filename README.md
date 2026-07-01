@@ -37,11 +37,13 @@
 |---------|-------------|
 | **Show timer** | Toggle the elapsed clock on/off |
 | **Completion sound** | Soft chime when a turn >1 min finishes (user-selectable .mp3) |
-| **Notification sound** | Tink sound when OpenCode needs permission |
+| **Notification sound** | Always plays Tink when OpenCode asks for permission (no toggle) |
 | **Animation style** | OpenCode Spark · Block Build · Terminal Pulse · Bounce · Pulse · Dots |
 | **Hide idle sessions** | Auto-hide after 5m / 15m / 30m / 1h / never |
-| **Break Time** | Full-screen overlay every 30m — emoji carousel with countdown, count.mp3 tick, completion chime, skip button |
-| **Custom interval** | Custom break interval via dialog (supports any value, e.g. 2h) |
+| **Break Time** | Break reminder with two modes: fullscreen overlay or Sound Only |
+| **Sound Only** | Plays `tic-toc.wav` on interval, no fullscreen overlay (hides Duration & Labels) |
+| **Customize** | Submenu with Change Icon, Change Sound, Colors, Labels, Reset All |
+| **Colors** | Per-state color picker for Thinking, Idle, Permission, Tool — applies to status text & icon |
 | **Auto-update** | One-click "Update available" in menu |
 
 ---
@@ -82,7 +84,7 @@ The app copies its plugin to `~/.config/opencode/plugins/statusbar.ts` and the p
 
 ### Updating
 
-Rebuild and re-launch. The plugin gets refreshed on version change.
+Rebuild and re-launch. The plugin is overwritten on each launch if the content differs.
 
 ---
 
