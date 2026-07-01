@@ -1394,7 +1394,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         nameField.frame = NSRect(x: 0, y: 190, width: 320, height: 20)
         content.addSubview(nameField)
 
-        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.5"
+        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.6"
         let verField = NSTextField(labelWithString: "Version \(ver)")
         verField.font = .systemFont(ofSize: 12)
         verField.textColor = .secondaryLabelColor
@@ -2107,7 +2107,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func soundEdgeDone(_ s: Session, now: Double) -> Bool {
         let prev = soundPrev[s.id] ?? ""
-        if s.eff == "thinking" || s.eff == "tool", s.startedAt > 0 { turnStart[s.id] = s.startedAt }
+        if s.eff == "thinking" || s.eff == "tool", s.startedAt > 0, (turnStart[s.id] ?? 0) == 0 { turnStart[s.id] = s.startedAt }
         var edge = false
         let isNowIdle = s.eff == "idle" || s.eff.isEmpty
         let wasBusy = prev == "thinking" || prev == "tool"
