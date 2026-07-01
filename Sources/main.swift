@@ -1640,6 +1640,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         NSSound(named: "Tink")?.play()
 
+        countPlayer?.stop()
         if let path = Bundle.main.path(forResource: "count", ofType: "mp3") {
             countPlayer = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
         }
@@ -1691,6 +1692,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         breakEventMonitors = []
         breakWindows.forEach { $0.close() }
         breakWindows = []
+        countPlayer?.stop()
         playCompletionChime()
         startBreakTimer()
     }
@@ -1710,9 +1712,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if breakCountdown <= 0 {
             breakCountdownTimer?.invalidate()
             breakCountdownTimer = nil
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                self?.hideBreak()
-            }
+            hideBreak()
         }
     }
 
@@ -2249,17 +2249,7 @@ class BreakView: NSView {
     func slideCarousel(newIcon: String) {
         slots[headIdx].stringValue = newIcon
         headIdx = (headIdx + 1) % 5
-
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.28
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            for (i, slot) in self.slots.enumerated() {
-                let vp = ((i - self.headIdx + 5) % 5) - 2
-                let (frame, alpha) = self.slotFrame(vp)
-                slot.animator().frame = frame
-                slot.animator().alphaValue = alpha
-            }
-        })
+        layoutSlots()
     }
 
     func show(title: String, count: Int, message: String) {
