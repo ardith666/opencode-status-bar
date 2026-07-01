@@ -1699,15 +1699,19 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard breakActive else { return }
         breakCountdown -= 1
         breakIconIndex = (breakIconIndex + 1) % breakIcons.count
-        countPlayer?.currentTime = 0
-        countPlayer?.play()
         let newIcon = breakIcons[(breakIconIndex + 2) % breakIcons.count]
         for w in breakWindows {
             let v = w.contentView as? BreakView
             v?.updateCountdown(breakCountdown)
             v?.slideCarousel(newIcon: newIcon)
         }
-        if breakCountdown <= 0 { hideBreak() }
+        countPlayer?.currentTime = 0
+        countPlayer?.play()
+        if breakCountdown <= 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.hideBreak()
+            }
+        }
     }
 
     @objc func editBreakLabel(_ sender: NSMenuItem) {
