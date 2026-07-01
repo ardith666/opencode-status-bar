@@ -18,7 +18,7 @@
 
 > Built so you can tab away during a long thinking stretch and see, at a glance, whether OpenCode is working, waiting on you, or done.
 
-<img width="600" height="488" alt="OpenCode Status Bar screenshot" src="https://github.com/user-attachments/assets/7d43f46f-349d-4296-a919-c08e77cd820b" />
+<img width="600" height="488" alt="OpenCode Status Bar screenshot" src="https://github.com/user-attachments/assets/a44257a6-99f0-437e-892c-5a7c1a33ce9a" />
 
 ---
 
