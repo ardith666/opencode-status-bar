@@ -18,6 +18,12 @@
 
 > Built so you can tab away during a long thinking stretch and see, at a glance, whether OpenCode is working, waiting on you, or done.
 
+<p align="center">
+  <video src="assets/capture.mp4" width="600" autoplay loop muted playsinline></video>
+</p>
+
+> ⚡ GIF version also available at [`assets/capture.gif`](assets/capture.gif) for platforms that don't support inline video.
+
 ---
 
 ## ✨ What it shows
