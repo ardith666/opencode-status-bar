@@ -82,6 +82,16 @@ The dropdown lists **every live session** — project name, status, timer, and C
 
 ## 📦 Install
 
+### Homebrew
+
+```bash
+brew tap ardith666/tap
+brew trust ardith666/tap
+brew install --cask opencode-status-bar
+```
+
+### From source
+
 ```bash
 # 1. Build
 ./build.sh
