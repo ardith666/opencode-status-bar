@@ -623,6 +623,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     var animStyle = AnimStyle.block
+    var forcePulse = false
     var showTimer = false
     var playCompletionSound = false
     var playNotifSound = true
@@ -1036,7 +1037,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             let cpuStr = String(format: "%.0f%%", cpuUsage)
             let usedGB  = Double(ramUsed)  / 1_073_741_824
             let totalGB = Double(ramTotal) / 1_073_741_824
-            let ramStr  = String(format: "%.1f/%.0f GB", usedGB, totalGB)
+            let ramStr  = String(format: "%.1f/%.0fGB", usedGB, totalGB)
             let row1 = basicTwoColView(
                 left:  ("CPU", cpuStr),
                 right: ("RAM", ramStr),
@@ -1050,7 +1051,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             for dsk in disks {
                 let totalDSK = Double(dsk.total) / 1_073_741_824
                 let pct      = dsk.total > 0 ? Int(Double(dsk.total - dsk.free) / Double(dsk.total) * 100) : 0
-                let detail   = "\(dsk.type): \(String(format: "%.0f GB / %d%%", totalDSK, pct))"
+                let detail   = "\(dsk.type): \(String(format: "%.0fGB/%d%%", totalDSK, pct))"
                 let header: String
                 if dsk.isInternal {
                     header = "DSK"
@@ -2403,8 +2404,10 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let lead = lead else { renderResting(); return }
         switch lead.eff {
         case "permission":
-            render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: "permission") ?? amber, animate: false, startedAt: 0, dot: true)
+            forcePulse = true
+            render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: "permission") ?? amber, animate: true, startedAt: 0)
         case "thinking", "tool":
+            forcePulse = false
             render(label: statusText(lead, eff: lead.eff), color: effectiveColor(for: lead.eff), animate: true, startedAt: sessionActiveStart[lead.id] ?? lead.startedAt)
         default:
             renderResting()
@@ -2518,7 +2521,11 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func animStep() {
         frameIdx = (frameIdx + 1) % frameCount
-        statusItem.button?.image = iconImage(color: activeColor, frame: frameIdx)
+        if forcePulse {
+            statusItem.button?.image = pulseIcon(frame: frameIdx, color: activeColor)
+        } else {
+            statusItem.button?.image = iconImage(color: activeColor, frame: frameIdx)
+        }
         applyTitle()
     }
 
