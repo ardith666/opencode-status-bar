@@ -21,7 +21,13 @@
 <p align="center">
   <img width="600" alt="OpenCode Status Bar v1.1.2" src="https://raw.githubusercontent.com/aacassandra/opencode-status-bar/main/assets/screenshot-v1.1.2.png" />
   <br>
-  <em>↑ System widget dengan graphical bar charts CPU, RAM, Disk, Temperature</em>
+  <em>↑ v1.1.2 — NVMe detection, System Style toggle, timer continuity</em>
+</p>
+
+<p align="center">
+  <img width="600" alt="OpenCode Status Bar v1.1.0" src="https://raw.githubusercontent.com/aacassandra/opencode-status-bar/main/assets/screenshot-v1.1.0.png" />
+  <br>
+  <em>↑ v1.1.0 — System widget dengan graphical bar charts CPU, RAM, Disk, Temperature</em>
 </p>
 
 <p align="center">
