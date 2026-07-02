@@ -1,6 +1,8 @@
 import Cocoa
 import UniformTypeIdentifiers
 import AVFoundation
+import DiskArbitration
+import IOKit
 
 // MARK: - Animation Style
 
@@ -288,6 +290,44 @@ func rgbaToString(_ rgba: [Double]) -> String {
     return "\(r),\(g),\(b) (\(a)%)"
 }
 
+func diskType(forPath path: String) -> String {
+    guard let session = DASessionCreate(nil),
+          let url = URL(string: "file://\(path)"),
+          let disk = DADiskCreateFromVolumePath(nil, session, url as CFURL) else {
+        return "SSD"
+    }
+
+    // 1. Walk IORegistry from IOMedia parent chain looking for NVMe controller
+    let media = DADiskCopyIOMedia(disk)
+    if media != 0 {
+        var current = media
+        while current != 0 {
+            if IOObjectConformsTo(current, "IONVMeController") != 0 {
+                IOObjectRelease(media)
+                return "NVME"
+            }
+            var parent: io_registry_entry_t = 0
+            if IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent) != KERN_SUCCESS {
+                break
+            }
+            if current != media { IOObjectRelease(current) }
+            current = parent
+        }
+        IOObjectRelease(media)
+    }
+
+    // 2. Fallback: check model name via DiskArbitration
+    if let desc = DADiskCopyDescription(disk) {
+        let nsdict = desc as NSDictionary
+        if let model = nsdict[kDADiskDescriptionDeviceModelKey as NSString] as? String {
+            let m = model.trimmingCharacters(in: .whitespaces).lowercased()
+            if m.contains("hdd") || m.contains("wd ") || m.hasPrefix("st") || m.contains("seagate") { return "HDD" }
+        }
+    }
+
+    return "SSD"
+}
+
 final class SystemStatRowView: NSView {
     private let label: String
     private let value: Double
@@ -423,9 +463,10 @@ final class StatusController: NSObject, NSMenuDelegate {
     var ramTotal: UInt64 = 0
     var diskFree: UInt64 = 0
     var diskTotal: UInt64 = 0
-    var disks: [(name: String, free: UInt64, total: UInt64)] = []
+    var disks: [(name: String, free: UInt64, total: UInt64, isInternal: Bool, type: String)] = []
     var temperature: Double?
     var prevCpuTicks: (user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)?
+    var systemStyle: String = "progress"
     var prevCoreTicks: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)]?
     var prevCoreTicksArray: [[UInt32]]?
 
@@ -737,6 +778,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if d.object(forKey: "breakDuration") != nil { breakDuration = max(d.double(forKey: "breakDuration"), 1) }
         if d.object(forKey: "breakAudioOnly") != nil { breakAudioOnly = d.bool(forKey: "breakAudioOnly") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
+        if let s = d.string(forKey: "systemStyle") { systemStyle = s }
         // config overrides UserDefaults
         if let v = loadedConfig.display?.showTimer { showTimer = v }
         if let v = loadedConfig.display?.hideIdleAfter { d.set(v, forKey: "hideIdleAfter") }
@@ -933,50 +975,107 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         // --- System Info
         menu.addItem(header("System"))
-        let sysW: CGFloat = cfg["boxWidth"] ?? 300
-        let openActivityMtr = { menu.cancelTracking()
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
 
-        let cpuPct = cpuUsage / 100.0
-        let cpuLabel = cpuCores > 0 ? "CPU(\(cpuCores))" : "CPU"
-        let cpuDetail = String(format: "%.0f%%", cpuUsage)
-        let cpuColor: NSColor = cpuUsage > 80 ? .systemRed : cpuUsage > 50 ? .systemOrange : .systemBlue
-        let cpuRow = SystemStatRowView(label: cpuLabel, value: cpuPct, detail: cpuDetail, barColor: cpuColor, width: sysW)
-        cpuRow.onClick = openActivityMtr
-        if !perCoreUsage.isEmpty {
-            let coreStr = perCoreUsage.enumerated().map { i, v in "C\(i+1): \(Int(v))%" }.joined(separator: "  ")
-            cpuRow.toolTip = coreStr
-        }
-        let cpuItem = NSMenuItem(); cpuItem.view = cpuRow; menu.addItem(cpuItem)
+        if systemStyle == "progress" {
+            let sysW: CGFloat = cfg["boxWidth"] ?? 300
+            let openActivityMtr = { menu.cancelTracking()
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
 
-        let ramPct = ramTotal > 0 ? Double(ramUsed) / Double(ramTotal) : 0
-        let usedGB = Double(ramUsed) / 1_073_741_824
-        let totalGB = Double(ramTotal) / 1_073_741_824
-        let ramDetail = String(format: "%.1f/%.0f", usedGB, totalGB)
-        let ramColor: NSColor = ramPct > 0.9 ? .systemRed : ramPct > 0.75 ? .systemOrange : .systemGreen
-        let ramRow = SystemStatRowView(label: "RAM", value: ramPct, detail: ramDetail, barColor: ramColor, width: sysW)
-        ramRow.onClick = openActivityMtr
-        let ramItem = NSMenuItem(); ramItem.view = ramRow; menu.addItem(ramItem)
+            let cpuPct = cpuUsage / 100.0
+            let cpuLabel = cpuCores > 0 ? "CPU(\(cpuCores))" : "CPU"
+            let cpuDetail = String(format: "%.0f%%", cpuUsage)
+            let cpuColor: NSColor = cpuUsage > 80 ? .systemRed : cpuUsage > 50 ? .systemOrange : .systemBlue
+            let cpuRow = SystemStatRowView(label: cpuLabel, value: cpuPct, detail: cpuDetail, barColor: cpuColor, width: sysW)
+            cpuRow.onClick = openActivityMtr
+            if !perCoreUsage.isEmpty {
+                let coreStr = perCoreUsage.enumerated().map { i, v in "C\(i+1): \(Int(v))%" }.joined(separator: "  ")
+                cpuRow.toolTip = coreStr
+            }
+            let cpuItem = NSMenuItem(); cpuItem.view = cpuRow; menu.addItem(cpuItem)
 
-        // One bar per disk
-        for (i, dsk) in disks.enumerated() {
-            let dskPct = dsk.total > 0 ? Double(dsk.total - dsk.free) / Double(dsk.total) : 0
-            let usedDSK = Double(dsk.total - dsk.free) / 1_073_741_824
-            let totalDSK = Double(dsk.total) / 1_073_741_824
-            let dskDetail = String(format: "%.0f/%.0f", usedDSK, totalDSK)
-            let dskColor: NSColor = dskPct > 0.9 ? .systemRed : dskPct > 0.8 ? .systemOrange : .systemOrange
-            let label = i == 0 ? "DSK" : dsk.name.count > 4 ? String(dsk.name.prefix(4)) : dsk.name
-            let dskRow = SystemStatRowView(label: label.uppercased(), value: dskPct, detail: dskDetail, barColor: dskColor, width: sysW)
-            dskRow.onClick = openActivityMtr
-            let dskItem = NSMenuItem(); dskItem.view = dskRow; menu.addItem(dskItem)
-        }
+            let ramPct = ramTotal > 0 ? Double(ramUsed) / Double(ramTotal) : 0
+            let usedGB = Double(ramUsed) / 1_073_741_824
+            let totalGB = Double(ramTotal) / 1_073_741_824
+            let ramDetail = String(format: "%.1f/%.0f", usedGB, totalGB)
+            let ramColor: NSColor = ramPct > 0.9 ? .systemRed : ramPct > 0.75 ? .systemOrange : .systemGreen
+            let ramRow = SystemStatRowView(label: "RAM", value: ramPct, detail: ramDetail, barColor: ramColor, width: sysW)
+            ramRow.onClick = openActivityMtr
+            let ramItem = NSMenuItem(); ramItem.view = ramRow; menu.addItem(ramItem)
 
-        if let temp = temperature, temp > 5 {
-            let tempPct = min(temp / 100, 1)
-            let tempDetail = String(format: "%.0f°C", temp)
-            let tempColor: NSColor = temp > 80 ? .systemRed : temp > 60 ? .systemOrange : .systemGray
-            let tempRow = SystemStatRowView(label: "TMP", value: tempPct, detail: tempDetail, barColor: tempColor, width: sysW)
-            let tempItem = NSMenuItem(); tempItem.view = tempRow; menu.addItem(tempItem)
+            var extCount = 0
+            for dsk in disks {
+                let dskPct = dsk.total > 0 ? Double(dsk.total - dsk.free) / Double(dsk.total) : 0
+                let usedDSK = Double(dsk.total - dsk.free) / 1_073_741_824
+                let totalDSK = Double(dsk.total) / 1_073_741_824
+                let dskDetail = String(format: "%.0f/%.0f", usedDSK, totalDSK)
+                let dskColor: NSColor = dskPct > 0.9 ? .systemRed : dskPct > 0.8 ? .systemOrange : .systemOrange
+                let label: String
+                if dsk.isInternal {
+                    label = "DSK"
+                } else {
+                    extCount += 1
+                    let shortName = dsk.name.count > 4 ? String(dsk.name.prefix(4)) : dsk.name
+                    label = shortName.uppercased()
+                }
+                let dskRow = SystemStatRowView(label: label, value: dskPct, detail: dskDetail, barColor: dskColor, width: sysW)
+                dskRow.onClick = openActivityMtr
+                dskRow.toolTip = "\(dsk.type): \(label) (\(dskDetail))"
+                let dskItem = NSMenuItem(); dskItem.view = dskRow; menu.addItem(dskItem)
+            }
+
+            if let temp = temperature, temp > 5 {
+                let tempPct = min(temp / 100, 1)
+                let tempDetail = String(format: "%.0f°C", temp)
+                let tempColor: NSColor = temp > 80 ? .systemRed : temp > 60 ? .systemOrange : .systemGray
+                let tempRow = SystemStatRowView(label: "TMP", value: tempPct, detail: tempDetail, barColor: tempColor, width: sysW)
+                let tempItem = NSMenuItem(); tempItem.view = tempRow; menu.addItem(tempItem)
+            }
+        } else {
+            let menuW = CGFloat(cfg["boxWidth"] ?? 300)
+            // Row 1: CPU + RAM
+            let cpuStr = String(format: "%.0f%%", cpuUsage)
+            let usedGB  = Double(ramUsed)  / 1_073_741_824
+            let totalGB = Double(ramTotal) / 1_073_741_824
+            let ramStr  = String(format: "%.1f/%.0f GB", usedGB, totalGB)
+            let row1 = basicTwoColView(
+                left:  ("CPU", cpuStr),
+                right: ("RAM", ramStr),
+                width: menuW
+            )
+            let row1Item = NSMenuItem(); row1Item.view = row1; menu.addItem(row1Item)
+
+            // Disk rows: pair disks 2-per-row
+            var extIdx = 0
+            var diskCells: [(header: String, detail: String)] = []
+            for dsk in disks {
+                let totalDSK = Double(dsk.total) / 1_073_741_824
+                let pct      = dsk.total > 0 ? Int(Double(dsk.total - dsk.free) / Double(dsk.total) * 100) : 0
+                let detail   = "\(dsk.type): \(String(format: "%.0f GB / %d%%", totalDSK, pct))"
+                let header: String
+                if dsk.isInternal {
+                    header = "DSK"
+                } else {
+                    extIdx += 1
+                    let shortName = String(dsk.name.prefix(10))
+                    header = "EXT\(extIdx) (\(shortName))"
+                }
+                diskCells.append((header, detail))
+            }
+            // pair into rows of 2
+            var i = 0
+            while i < diskCells.count {
+                let left = diskCells[i]
+                let right = i + 1 < diskCells.count ? diskCells[i + 1] : nil
+                let rowView = basicTwoColView(left: left, right: right, width: menuW)
+                let rowItem = NSMenuItem(); rowItem.view = rowView; menu.addItem(rowItem)
+                i += 2
+            }
+
+            if let t = temperature {
+                let tempItem = NSMenuItem(title: String(format: "Temp: %.0f°C", t), action: nil, keyEquivalent: "")
+                tempItem.isEnabled = false
+                menu.addItem(tempItem)
+            }
         }
 
         menu.addItem(.separator())
@@ -1169,6 +1268,19 @@ final class StatusController: NSObject, NSMenuDelegate {
         soundParent.submenu = soundSub
         customizeSub.addItem(soundParent)
 
+        // System Style submenu
+        let sysStyleParent = NSMenuItem(title: "System Style", action: nil, keyEquivalent: "")
+        let sysStyleSub = NSMenu()
+        for (raw, name) in [("basic", "Basic"), ("progress", "ProgressBar")] {
+            let it = NSMenuItem(title: name, action: #selector(chooseSystemStyle(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = raw
+            it.state = systemStyle == raw ? .on : .off
+            sysStyleSub.addItem(it)
+        }
+        sysStyleParent.submenu = sysStyleSub
+        customizeSub.addItem(sysStyleParent)
+
         // Colors submenu
         let colorsParent = NSMenuItem(title: "Colors", action: nil, keyEquivalent: "")
         let colorsSub = NSMenu()
@@ -1246,6 +1358,42 @@ final class StatusController: NSObject, NSMenuDelegate {
         let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         it.isEnabled = false
         return it
+    }
+
+    // Basic style: 2-column info row. right is optional (nil = left spans full width).
+    func basicTwoColView(
+        left:  (header: String, detail: String),
+        right: (header: String, detail: String)?,
+        width: CGFloat
+    ) -> NSView {
+        let rowH: CGFloat = 36, pad: CGFloat = 14
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: rowH))
+        view.autoresizingMask = [.width]
+
+        let colW = right != nil ? (width - pad * 2) / 2 : (width - pad * 2)
+        let isDark = NSApp.effectiveAppearance.name == .darkAqua
+
+        func addCell(x: CGFloat, hdr: String, det: String) {
+            let headerLabel = NSTextField(labelWithString: hdr)
+            headerLabel.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
+            headerLabel.textColor = isDark ? NSColor(white: 0.6, alpha: 1) : NSColor(white: 0.45, alpha: 1)
+            headerLabel.frame = NSRect(x: x, y: rowH / 2 + 1, width: colW, height: 14)
+            headerLabel.autoresizingMask = [.width]
+            view.addSubview(headerLabel)
+
+            let detailLabel = NSTextField(labelWithString: det)
+            detailLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+            detailLabel.textColor = .labelColor
+            detailLabel.frame = NSRect(x: x, y: 4, width: colW, height: 14)
+            detailLabel.autoresizingMask = [.width]
+            view.addSubview(detailLabel)
+        }
+
+        addCell(x: pad,          hdr: left.header,  det: left.detail)
+        if let r = right {
+            addCell(x: pad + colW, hdr: r.header, det: r.detail)
+        }
+        return view
     }
 
     func toggleRow(title: String, isOn: Bool, onToggle: @escaping (Bool) -> Void) -> NSMenuItem {
@@ -1799,6 +1947,13 @@ final class StatusController: NSObject, NSMenuDelegate {
         evaluate()
     }
 
+    @objc func chooseSystemStyle(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        systemStyle = raw
+        UserDefaults.standard.set(raw, forKey: "systemStyle")
+        if let menu = statusItem.menu { populateMenu(menu) }
+    }
+
     @objc func chooseMinDuration(_ sender: NSMenuItem) {
         guard let val = sender.representedObject as? Double else { return }
         soundMinDuration = val
@@ -2141,31 +2296,36 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         // Multiple disks — all local non-system volumes
         disks.removeAll()
-        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsLocalKey]
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsLocalKey, .volumeIsRootFileSystemKey]
         if let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys) {
             for vol in volumes {
                 guard let vals = try? vol.resourceValues(forKeys: Set(keys)),
                       let name = vals.volumeName,
                       let isLocal = vals.volumeIsLocal, isLocal else { continue }
                 let path = vol.path
-                guard !path.contains("/.timemachine/"),
-                      !path.contains("/System/Volumes/"),
+                // exclude system/pseudo/snapshot volumes
+                guard !path.hasPrefix("/System/"),
+                      !path.hasPrefix("/private/"),
+                      !path.contains("/.timemachine/"),
                       !name.lowercased().hasPrefix("backups of"),
                       !name.contains("@snap-") else { continue }
                 guard let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path) else { continue }
-                let free = (attrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
-                let total = (attrs[FileAttributeKey.systemSize] as? UInt64) ?? 0
-                guard total > 0 else { continue }
-                disks.append((name, free, total))
+                let free  = (attrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
+                let total = (attrs[FileAttributeKey.systemSize]     as? UInt64) ?? 0
+                // skip pseudo/tiny volumes (< 1 GB)
+                guard total >= 1_073_741_824 else { continue }
+                let isInternal = (path == "/" || (vals.volumeIsRootFileSystem == true))
+                let type = diskType(forPath: path)
+                disks.append((name, free, total, isInternal, type))
             }
         }
         // always have / as fallback
         if disks.isEmpty, let rootAttrs = try? FileManager.default.attributesOfFileSystem(forPath: "/") {
-            let rootFree = (rootAttrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
-            let rootTotal = (rootAttrs[FileAttributeKey.systemSize] as? UInt64) ?? 0
-            disks.append(("/", rootFree, rootTotal))
+            let rootFree  = (rootAttrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
+            let rootTotal = (rootAttrs[FileAttributeKey.systemSize]     as? UInt64) ?? 0
+            disks.append(("/", rootFree, rootTotal, true, "SSD"))
         }
-        diskFree = disks.first?.free ?? 0
+        diskFree  = disks.first?.free  ?? 0
         diskTotal = disks.first?.total ?? 0
     }
 

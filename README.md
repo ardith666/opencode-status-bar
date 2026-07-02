@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-12%2B-brightgreen" alt="macOS 12+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT">
-  <img src="https://img.shields.io/badge/version-1.1.0-orange" alt="Version 1.1.0">
+  <img src="https://img.shields.io/badge/version-1.1.2-orange" alt="Version 1.1.2">
   <img src="https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-lightgrey" alt="Universal Binary">
   <img src="https://img.shields.io/badge/Swift-5-orange" alt="Swift 5">
   <img src="https://img.shields.io/badge/Bun-Typescript-14151a" alt="Bun">
@@ -19,7 +19,7 @@
 > Built so you can tab away during a long thinking stretch and see, at a glance, whether OpenCode is working, waiting on you, or done.
 
 <p align="center">
-  <img width="600" alt="OpenCode Status Bar v1.1.0" src="https://raw.githubusercontent.com/aacassandra/opencode-status-bar/main/assets/screenshot-v1.1.0.png" />
+  <img width="600" alt="OpenCode Status Bar v1.1.2" src="https://raw.githubusercontent.com/aacassandra/opencode-status-bar/main/assets/screenshot-v1.1.2.png" />
   <br>
   <em>↑ System widget dengan graphical bar charts CPU, RAM, Disk, Temperature</em>
 </p>
@@ -146,6 +146,14 @@ App not showing? Plugin not installed?
 ---
 
 ## 📋 Changelog
+
+### v1.1.2
+- **NVMe detection**: accurate disk type via IORegistry parent chain (IONVMeController)
+- **System Style**: switchable Basic (text) / ProgressBar (graphical) layout under Customize menu
+- **Basic layout**: compact 2-column text format with disk type prefix (NVMe/SSD/HDD)
+- **Disk filter**: exclude system volumes, <1 GB, timemachine snapshots
+- **Timer continuity**: tracks from first active state across thinking→tool→permission transitions
+- **Temperature**: auto-hides row when SMC unavailable (Hackintosh)
 
 ### v1.1.0
 - **Graphical system widget**: bar charts with color thresholds for CPU, RAM, Disk, temperature
