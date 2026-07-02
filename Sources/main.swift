@@ -288,6 +288,86 @@ func rgbaToString(_ rgba: [Double]) -> String {
     return "\(r),\(g),\(b) (\(a)%)"
 }
 
+final class SystemStatRowView: NSView {
+    private let label: String
+    private let value: Double
+    private let detail: String
+    private let barColor: NSColor
+    private let rowH: CGFloat = 22
+    var onClick: (() -> Void)?
+    private let highlightView = NSVisualEffectView()
+    private var hovered = false
+
+    init(label: String, value: Double, detail: String, barColor: NSColor, width: CGFloat) {
+        self.label = label
+        self.value = min(max(value, 0), 1)
+        self.detail = detail
+        self.barColor = barColor
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: rowH))
+        autoresizingMask = [.width]
+        toolTip = "\(label): \(detail) (\(Int(self.value * 100))%)"
+        highlightView.material = .selection
+        highlightView.state = .active
+        highlightView.isEmphasized = true
+        highlightView.wantsLayer = true
+        highlightView.layer?.cornerRadius = 5
+        highlightView.isHidden = true
+        addSubview(highlightView)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; highlightView.isHidden = false }
+    override func mouseExited(with event: NSEvent) { hovered = false; highlightView.isHidden = true }
+    override func mouseDown(with event: NSEvent) { onClick?() }
+    override func layout() { super.layout(); highlightView.frame = bounds.insetBy(dx: 5, dy: 0) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let w = bounds.width
+        if w <= 0 { return }
+        let pad: CGFloat = 12, barH: CGFloat = 8, gap: CGFloat = 4
+        let labelW: CGFloat = 38, detailW: CGFloat = 90
+        let barX = pad + labelW + gap
+        let barW = w - barX - detailW - pad
+        let barY = (rowH - barH) / 2
+        let isDark = effectiveAppearance.name == .darkAqua
+
+        // bar background
+        let bg = isDark ? NSColor(white: 0.25, alpha: 1) : NSColor(white: 0.85, alpha: 1)
+        bg.setFill()
+        let bgPath = NSBezierPath(roundedRect: NSRect(x: barX, y: barY, width: barW, height: barH), xRadius: 3, yRadius: 3)
+        bgPath.fill()
+
+        // bar fill
+        if value > 0 {
+            let fillW = max(4, barW * CGFloat(value))
+            barColor.setFill()
+            let fillPath = NSBezierPath(roundedRect: NSRect(x: barX, y: barY, width: fillW, height: barH), xRadius: 3, yRadius: 3)
+            fillPath.fill()
+        }
+
+        // label text
+        let labelColor = isDark ? NSColor(white: 0.8, alpha: 1) : NSColor(white: 0.35, alpha: 1)
+        let labelStr = NSAttributedString(string: label, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
+            .foregroundColor: labelColor,
+        ])
+        labelStr.draw(at: NSPoint(x: pad, y: (rowH - labelStr.size().height) / 2))
+
+        // detail text
+        let detColor = isDark ? NSColor.white : NSColor.labelColor
+        let detStr = NSAttributedString(string: detail, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: detColor,
+        ])
+        detStr.draw(at: NSPoint(x: w - detailW + 4, y: (rowH - detStr.size().height) / 2))
+    }
+}
+
 // MARK: - StatusController
 
 final class StatusController: NSObject, NSMenuDelegate {
@@ -337,10 +417,17 @@ final class StatusController: NSObject, NSMenuDelegate {
     var startedAt: Double = 0
     var activeColor: NSColor? = nil
     var cpuUsage: Double = 0
+    var cpuCores: Int = 0
+    var perCoreUsage: [Double] = []
     var ramUsed: UInt64 = 0
     var ramTotal: UInt64 = 0
+    var diskFree: UInt64 = 0
+    var diskTotal: UInt64 = 0
+    var disks: [(name: String, free: UInt64, total: UInt64)] = []
     var temperature: Double?
     var prevCpuTicks: (user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)?
+    var prevCoreTicks: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)]?
+    var prevCoreTicksArray: [[UInt32]]?
 
     let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1)
 
@@ -845,18 +932,53 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
 
         // --- System Info
+        menu.addItem(header("System"))
+        let sysW: CGFloat = cfg["boxWidth"] ?? 300
+        let openActivityMtr = { menu.cancelTracking()
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
+
+        let cpuPct = cpuUsage / 100.0
+        let cpuLabel = cpuCores > 0 ? "CPU(\(cpuCores))" : "CPU"
+        let cpuDetail = String(format: "%.0f%%", cpuUsage)
+        let cpuColor: NSColor = cpuUsage > 80 ? .systemRed : cpuUsage > 50 ? .systemOrange : .systemBlue
+        let cpuRow = SystemStatRowView(label: cpuLabel, value: cpuPct, detail: cpuDetail, barColor: cpuColor, width: sysW)
+        cpuRow.onClick = openActivityMtr
+        if !perCoreUsage.isEmpty {
+            let coreStr = perCoreUsage.enumerated().map { i, v in "C\(i+1): \(Int(v))%" }.joined(separator: "  ")
+            cpuRow.toolTip = coreStr
+        }
+        let cpuItem = NSMenuItem(); cpuItem.view = cpuRow; menu.addItem(cpuItem)
+
+        let ramPct = ramTotal > 0 ? Double(ramUsed) / Double(ramTotal) : 0
         let usedGB = Double(ramUsed) / 1_073_741_824
         let totalGB = Double(ramTotal) / 1_073_741_824
-        let ramStr = String(format: "%.1f", usedGB)
-        let totalStr = String(format: "%.1f", totalGB)
-        let cpuStr = String(format: "%.0f", cpuUsage)
-        menu.addItem(header("System"))
-        let cpuItem = NSMenuItem(title: "CPU: \(cpuStr)%", action: nil, keyEquivalent: "")
-        cpuItem.isEnabled = false
-        menu.addItem(cpuItem)
-        let ramItem = NSMenuItem(title: "RAM: \(ramStr)/\(totalStr) GB", action: nil, keyEquivalent: "")
-        ramItem.isEnabled = false
-        menu.addItem(ramItem)
+        let ramDetail = String(format: "%.1f/%.0f", usedGB, totalGB)
+        let ramColor: NSColor = ramPct > 0.9 ? .systemRed : ramPct > 0.75 ? .systemOrange : .systemGreen
+        let ramRow = SystemStatRowView(label: "RAM", value: ramPct, detail: ramDetail, barColor: ramColor, width: sysW)
+        ramRow.onClick = openActivityMtr
+        let ramItem = NSMenuItem(); ramItem.view = ramRow; menu.addItem(ramItem)
+
+        // One bar per disk
+        for (i, dsk) in disks.enumerated() {
+            let dskPct = dsk.total > 0 ? Double(dsk.total - dsk.free) / Double(dsk.total) : 0
+            let usedDSK = Double(dsk.total - dsk.free) / 1_073_741_824
+            let totalDSK = Double(dsk.total) / 1_073_741_824
+            let dskDetail = String(format: "%.0f/%.0f", usedDSK, totalDSK)
+            let dskColor: NSColor = dskPct > 0.9 ? .systemRed : dskPct > 0.8 ? .systemOrange : .systemOrange
+            let label = i == 0 ? "DSK" : dsk.name.count > 4 ? String(dsk.name.prefix(4)) : dsk.name
+            let dskRow = SystemStatRowView(label: label.uppercased(), value: dskPct, detail: dskDetail, barColor: dskColor, width: sysW)
+            dskRow.onClick = openActivityMtr
+            let dskItem = NSMenuItem(); dskItem.view = dskRow; menu.addItem(dskItem)
+        }
+
+        if let temp = temperature, temp > 5 {
+            let tempPct = min(temp / 100, 1)
+            let tempDetail = String(format: "%.0f°C", temp)
+            let tempColor: NSColor = temp > 80 ? .systemRed : temp > 60 ? .systemOrange : .systemGray
+            let tempRow = SystemStatRowView(label: "TMP", value: tempPct, detail: tempDetail, barColor: tempColor, width: sysW)
+            let tempItem = NSMenuItem(); tempItem.view = tempRow; menu.addItem(tempItem)
+        }
+
         menu.addItem(.separator())
 
         // --- Options
@@ -1394,7 +1516,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         nameField.frame = NSRect(x: 0, y: 190, width: 320, height: 20)
         content.addSubview(nameField)
 
-        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.6"
+        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1.0"
         let verField = NSTextField(labelWithString: "Version \(ver)")
         verField.font = .systemFont(ofSize: 12)
         verField.textColor = .secondaryLabelColor
@@ -1906,7 +2028,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         IOObjectRelease(service)
         defer { IOServiceClose(conn) }
 
-        for keyStr in ["TC0P", "TC01", "TC0D"] {
+        for keyStr in ["TC0P", "TC01", "TC0D", "Tp09", "Tp01", "Tp0T", "Th0P"] {
             if let val = smcReadValue(conn: conn, key: keyStr) {
                 return val
             }
@@ -1983,24 +2105,68 @@ final class StatusController: NSObject, NSMenuDelegate {
             ramUsed = (active + wired + compressed) * pageSize
         }
 
-        var cpuLoad = host_cpu_load_info_data_t()
-        var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.size / MemoryLayout<integer_t>.size)
-        let kr2 = withUnsafeMutablePointer(to: &cpuLoad) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &count)
+        // Per-core CPU
+        var cpuCount = natural_t(0)
+        var cpuInfoPtr: processor_info_array_t? = nil
+        var cpuInfoCnt = mach_msg_type_number_t(0)
+        let kr3 = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &cpuCount, &cpuInfoPtr, &cpuInfoCnt)
+        if kr3 == KERN_SUCCESS, let info = cpuInfoPtr {
+            cpuCores = Int(cpuCount)
+            let totalCount = Int(cpuInfoCnt)
+            var cur: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)] = []
+            let stride = Int(CPU_STATE_MAX)
+            for i in 0..<Int(cpuCount) {
+                let base = i * stride
+                guard base + 3 < totalCount else { continue }
+                let u   = UInt32(info[base + Int(CPU_STATE_USER)])
+                let s   = UInt32(info[base + Int(CPU_STATE_SYSTEM)])
+                let idl = UInt32(info[base + Int(CPU_STATE_IDLE)])
+                let n   = UInt32(info[base + Int(CPU_STATE_NICE)])
+                cur.append((u, s, idl, n))
             }
-        }
-        if kr2 == KERN_SUCCESS {
-            let cur = (cpuLoad.cpu_ticks.0, cpuLoad.cpu_ticks.1, cpuLoad.cpu_ticks.2, cpuLoad.cpu_ticks.3)
-            if let prev = prevCpuTicks {
-                let totalDelta = (cur.0 - prev.0) + (cur.1 - prev.1) + (cur.2 - prev.2) + (cur.3 - prev.3)
-                let idleDelta = cur.2 - prev.2
-                cpuUsage = totalDelta > 0 ? Double(totalDelta - idleDelta) / Double(totalDelta) * 100 : 0
+            if let prev = prevCoreTicksArray, prev.count == cur.count {
+                perCoreUsage = zip(cur, prev).map { c, p in
+                    let totalDelta = (c.user - p[0]) + (c.system - p[1]) + (c.idle - p[2]) + (c.nice - p[3])
+                    let idleDelta = c.idle - p[2]
+                    return totalDelta > 0 ? Double(totalDelta - idleDelta) / Double(totalDelta) * 100 : 0
+                }
+            } else {
+                perCoreUsage = Array(repeating: 0, count: cur.count)
             }
-            prevCpuTicks = cur
+            prevCoreTicksArray = cur.map { [$0.user, $0.system, $0.idle, $0.nice] }
+            cpuUsage = perCoreUsage.reduce(0, +) / Double(max(perCoreUsage.count, 1))
         }
 
         temperature = readTemperature()
+
+        // Multiple disks — all local non-system volumes
+        disks.removeAll()
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsLocalKey]
+        if let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys) {
+            for vol in volumes {
+                guard let vals = try? vol.resourceValues(forKeys: Set(keys)),
+                      let name = vals.volumeName,
+                      let isLocal = vals.volumeIsLocal, isLocal else { continue }
+                let path = vol.path
+                guard !path.contains("/.timemachine/"),
+                      !path.contains("/System/Volumes/"),
+                      !name.lowercased().hasPrefix("backups of"),
+                      !name.contains("@snap-") else { continue }
+                guard let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path) else { continue }
+                let free = (attrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
+                let total = (attrs[FileAttributeKey.systemSize] as? UInt64) ?? 0
+                guard total > 0 else { continue }
+                disks.append((name, free, total))
+            }
+        }
+        // always have / as fallback
+        if disks.isEmpty, let rootAttrs = try? FileManager.default.attributesOfFileSystem(forPath: "/") {
+            let rootFree = (rootAttrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
+            let rootTotal = (rootAttrs[FileAttributeKey.systemSize] as? UInt64) ?? 0
+            disks.append(("/", rootFree, rootTotal))
+        }
+        diskFree = disks.first?.free ?? 0
+        diskTotal = disks.first?.total ?? 0
     }
 
     func tick() {

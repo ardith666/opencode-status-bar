@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-12%2B-brightgreen" alt="macOS 12+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT">
-  <img src="https://img.shields.io/badge/version-1.0.0-orange" alt="Version 1.0.0">
+  <img src="https://img.shields.io/badge/version-1.1.0-orange" alt="Version 1.1.0">
   <img src="https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-lightgrey" alt="Universal Binary">
   <img src="https://img.shields.io/badge/Swift-5-orange" alt="Swift 5">
   <img src="https://img.shields.io/badge/Bun-Typescript-14151a" alt="Bun">
@@ -42,7 +42,7 @@
 | **Hide idle sessions** | Auto-hide after 5m / 15m / 30m / 1h / never |
 | **Break Time** | Break reminder with two modes: fullscreen overlay or Sound Only |
 | **Sound Only** | Plays sound on interval, no fullscreen overlay |
-| **System info** | CPU usage %, RAM used/total, and CPU temperature (°C) in menu between Sessions and Options |
+| **System info** | Graphical bar charts for CPU (per-core tooltip), RAM, Disk (internal & external), and temperature (°C) — click any row to open Activity Monitor |
 | **Customize** | Submenu with Change Icon, Change Sound, Colors, Labels, Reset All |
 | **Change Sound** | Completion, Permission, plus Break Time sounds: Sound Only, Starting, Completion |
 | **Colors** | Per-state color picker for Thinking, Idle, Permission, Tool — applies to status text & icon |
@@ -132,6 +132,26 @@ App not showing? Plugin not installed?
 - Check the plugin file exists: `~/.config/opencode/plugins/statusbar.ts`
 - Check state directory: `~/.config/opencode/statusbar/state.d/`
 - Launch the app manually: `open build/OpenCodeStatusBar.app`
+
+---
+
+## 📋 Changelog
+
+### v1.1.0
+- **Graphical system widget**: bar charts with color thresholds for CPU, RAM, Disk, temperature
+- **Per-core CPU**: shows core count, tooltip with per-core usage on hover
+- **Multiple disks**: internal & external volumes (filters APFS system volumes & Time Machine snapshots)
+- **Temperature**: now displayed when valid (>5°C), expanded SMC key support
+- **Click to Activity Monitor**: click any system stat row to open Activity Monitor
+
+### v1.0.6
+- **Fix**: completion sound min-duration measured from first busy state, not last transition
+
+### v1.0.5
+- **Fix**: reset break interval default to 30m (remove stale UserDefaults 60s from testing)
+
+### v1.0.4
+- Permission notification fix, count/completion sound for break, emoji carousel, custom interval, crash fixes
 
 ---
 
