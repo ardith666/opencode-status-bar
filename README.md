@@ -18,13 +18,13 @@
 
 > Built so you can tab away during a long thinking stretch and see, at a glance, whether OpenCode is working, waiting on you, or done.
 
-<p>
+<p align="center">
   <img width="600" alt="OpenCode Status Bar v1.1.0" src="https://raw.githubusercontent.com/aacassandra/opencode-status-bar/main/assets/screenshot-v1.1.0.png" />
   <br>
   <em>↑ System widget dengan graphical bar charts CPU, RAM, Disk, Temperature</em>
 </p>
 
-<p>
+<p align="center">
   <img width="600" alt="OpenCode Status Bar demo" src="https://raw.githubusercontent.com/aacassandra/opencode-status-bar/main/assets/capture.gif" />
   <br>
   <em>↑ Live status, animasi, dan break time overlay</em>
