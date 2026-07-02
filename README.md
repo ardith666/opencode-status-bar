@@ -82,6 +82,10 @@ The dropdown lists **every live session** — project name, status, timer, and C
 
 ## 📦 Install
 
+### Download DMG
+
+Grab the latest DMG from the [releases page](https://github.com/aacassandra/opencode-status-bar/releases/latest), mount it, and drag to Applications.
+
 ### Homebrew
 
 ```bash
