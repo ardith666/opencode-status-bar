@@ -1,0 +1,31 @@
+name: Update Homebrew Tap
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify-tap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.BREW_TAP_PAT }}
+          script: |
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: context.ref.replace('refs/tags/', ''),
+            });
+            const asset = release.assets.find(a => a.name.endsWith('.dmg'));
+            if (!asset) throw new Error('No DMG asset found');
+            const fs = require('fs');
+            const resp = await github.request(asset.url + '?format=media', { headers: { Accept: 'application/octet-stream' }, followRedirects: true, responseType: 'buffer' });
+            const crypto = require('crypto');
+            const sha256 = crypto.createHash('sha256').update(resp.data).digest('hex');
+            const version = release.tag_name.replace('v', '');
+            await github.rest.repos.createDispatchEvent({
+              owner: 'ardith666',
+              repo: 'homebrew-tap',
+              event_type: 'release-published',
+              client_payload: { version, sha256 }
+            });
