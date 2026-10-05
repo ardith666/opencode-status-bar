@@ -290,10 +290,14 @@ func rgbaToString(_ rgba: [Double]) -> String {
     return "\(r),\(g),\(b) (\(a)%)"
 }
 
+private var diskTypeCache: [String: String] = [:]
+
 func diskType(forPath path: String) -> String {
+    if let cached = diskTypeCache[path] { return cached }
     guard let session = DASessionCreate(nil),
           let url = URL(string: "file://\(path)"),
           let disk = DADiskCreateFromVolumePath(nil, session, url as CFURL) else {
+        diskTypeCache[path] = "SSD"
         return "SSD"
     }
 
@@ -303,11 +307,14 @@ func diskType(forPath path: String) -> String {
         var current = media
         while current != 0 {
             if IOObjectConformsTo(current, "IONVMeController") != 0 {
+                if current != media { IOObjectRelease(current) }
                 IOObjectRelease(media)
+                diskTypeCache[path] = "NVME"
                 return "NVME"
             }
             var parent: io_registry_entry_t = 0
             if IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent) != KERN_SUCCESS {
+                if current != media { IOObjectRelease(current) }
                 break
             }
             if current != media { IOObjectRelease(current) }
@@ -321,12 +328,17 @@ func diskType(forPath path: String) -> String {
         let nsdict = desc as NSDictionary
         if let model = nsdict[kDADiskDescriptionDeviceModelKey as NSString] as? String {
             let m = model.trimmingCharacters(in: .whitespaces).lowercased()
-            if m.contains("hdd") || m.contains("wd ") || m.hasPrefix("st") || m.contains("seagate") { return "HDD" }
+            if m.contains("hdd") || m.contains("wd ") || m.hasPrefix("st") || m.contains("seagate") {
+                diskTypeCache[path] = "HDD"
+                return "HDD"
+            }
         }
     }
 
+    diskTypeCache[path] = "SSD"
     return "SSD"
 }
+
 
 final class SystemStatRowView: NSView {
     private let label: String
@@ -469,6 +481,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var systemStyle: String = "progress"
     var prevCoreTicks: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)]?
     var prevCoreTicksArray: [[UInt32]]?
+    var systemStatsTickCount = 0
 
     let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1)
 
@@ -901,13 +914,15 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func spinTick() {
-        spinAngle += 5
-        guard let img = rotatedSpinner(spinAngle) else { return }
-        let now = Date().timeIntervalSince1970
-        for (item, id) in sessionMenuItems {
-            guard let s = sessions[id], let v = item.view as? SessionRowView else { continue }
-            let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
-            if eff == "thinking" || eff == "tool" { v.setIcon(img) }
+        autoreleasepool {
+            spinAngle += 5
+            guard let img = rotatedSpinner(spinAngle) else { return }
+            let now = Date().timeIntervalSince1970
+            for (item, id) in sessionMenuItems {
+                guard let s = sessions[id], let v = item.view as? SessionRowView else { continue }
+                let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
+                if eff == "thinking" || eff == "tool" { v.setIcon(img) }
+            }
         }
     }
 
@@ -1452,6 +1467,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             panel.color = key == "permission" ? amber : NSColor.controlAccentColor
         }
         panel.orderFront(nil)
+        NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: panel)
         NotificationCenter.default.addObserver(self, selector: #selector(colorPanelClosed), name: NSWindow.willCloseNotification, object: panel)
     }
 
@@ -1467,6 +1483,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     @objc func colorPanelClosed() {
+        NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
         currentColorKey = nil
     }
 
@@ -1747,11 +1764,30 @@ final class StatusController: NSObject, NSMenuDelegate {
         return line
     }
 
+    private var cachedUIConfigData: [String: Double]?
+    private var cachedUIConfigMTime: Date?
+    private var pillCache: [String: NSImage] = [:]
+
     func uiConfig() -> [String: Double] {
         let p = (NSHomeDirectory() as NSString).appendingPathComponent(".config/opencode/statusbar/uiconfig.json")
+        guard FileManager.default.fileExists(atPath: p),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: p),
+              let mtime = attrs[.modificationDate] as? Date else {
+            return cachedUIConfigData ?? [:]
+        }
+        if let cached = cachedUIConfigData, cachedUIConfigMTime == mtime {
+            return cached
+        }
+        cachedUIConfigMTime = mtime
         guard let d = FileManager.default.contents(atPath: p),
-              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
-        return j.compactMapValues { ($0 as? NSNumber)?.doubleValue }
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+            cachedUIConfigData = [:]
+            return [:]
+        }
+        let parsed = j.compactMapValues { ($0 as? NSNumber)?.doubleValue }
+        cachedUIConfigData = parsed
+        pillCache.removeAll()
+        return parsed
     }
 
     func configureSessionRow(_ v: SessionRowView, _ s: Session, eff: String) {
@@ -1798,18 +1834,21 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func pillImage(_ text: String, selected: Bool = false) -> NSImage {
+        let cfg = uiConfig()
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let cacheKey = "\(text)_\(selected)_\(dark)"
+        if let cached = pillCache[cacheKey] { return cached }
+
         let t = text as NSString
         let font = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .semibold)
         let pad: CGFloat = 7, h: CGFloat = 15
-        let cfg = uiConfig()
         let dy = CGFloat(cfg["pillTextY"] ?? -1)
-        let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         let bgAlpha = CGFloat(cfg[dark ? "pillBgDark" : "pillBgLight"] ?? (dark ? 0.14 : 0.10))
         let bg = selected ? NSColor.white.withAlphaComponent(0.22)
                           : (dark ? NSColor.white : NSColor.black).withAlphaComponent(bgAlpha)
         let fg = selected ? NSColor.white : NSColor.labelColor
         let w = ceil(t.size(withAttributes: [.font: font]).width) + pad * 2
-        return NSImage(size: NSSize(width: w, height: h), flipped: false) { rect in
+        let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { rect in
             bg.setFill()
             NSBezierPath(roundedRect: rect, xRadius: h / 2, yRadius: h / 2).fill()
             let a: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: fg]
@@ -1817,6 +1856,8 @@ final class StatusController: NSObject, NSMenuDelegate {
             t.draw(at: NSPoint(x: (rect.width - ts.width) / 2, y: (rect.height - ts.height) / 2 + dy), withAttributes: a)
             return true
         }
+        pillCache[cacheKey] = img
+        return img
     }
 
     func sessionSymbol(_ s: Session, eff: String) -> NSImage? {
@@ -1858,18 +1899,25 @@ final class StatusController: NSObject, NSMenuDelegate {
         return img
     }()
 
+    private var spinnerFrameCache: [Int: NSImage] = [:]
+
     func rotatedSpinner(_ angleDeg: CGFloat) -> NSImage? {
         guard let base = spinnerBase else { return nil }
+        let normalized = (Int(angleDeg.rounded()) % 360 + 360) % 360
+        let step = (normalized / 5) * 5
+        if let cached = spinnerFrameCache[step] { return cached }
         let size = base.size
+        let angle = CGFloat(step)
         let img = NSImage(size: size, flipped: false) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.translateBy(x: size.width / 2, y: size.height / 2)
-            ctx.rotate(by: -angleDeg * .pi / 180)
+            ctx.rotate(by: -angle * .pi / 180)
             ctx.translateBy(x: -size.width / 2, y: -size.height / 2)
             base.draw(in: rect)
             return true
         }
         img.isTemplate = true
+        spinnerFrameCache[step] = img
         return img
     }
 
@@ -2245,12 +2293,17 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: State Polling
 
     func updateSystemStats() {
+        systemStatsTickCount += 1
         ramTotal = ProcessInfo.processInfo.physicalMemory
+
+        let hostPort = mach_host_self()
+        defer { mach_port_deallocate(mach_task_self_, hostPort) }
+
         var size = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
         var stats = vm_statistics64_data_t()
         let kr = withUnsafeMutablePointer(to: &stats) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &size)
+                host_statistics64(hostPort, HOST_VM_INFO64, $0, &size)
             }
         }
         if kr == KERN_SUCCESS {
@@ -2265,8 +2318,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         var cpuCount = natural_t(0)
         var cpuInfoPtr: processor_info_array_t? = nil
         var cpuInfoCnt = mach_msg_type_number_t(0)
-        let kr3 = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &cpuCount, &cpuInfoPtr, &cpuInfoCnt)
+        let kr3 = host_processor_info(hostPort, PROCESSOR_CPU_LOAD_INFO, &cpuCount, &cpuInfoPtr, &cpuInfoCnt)
         if kr3 == KERN_SUCCESS, let info = cpuInfoPtr {
+            defer {
+                let deallocSize = vm_size_t(cpuInfoCnt) * vm_size_t(MemoryLayout<integer_t>.stride)
+                vm_deallocate(mach_task_self_, vm_address_t(bitPattern: info), deallocSize)
+            }
             cpuCores = Int(cpuCount)
             let totalCount = Int(cpuInfoCnt)
             var cur: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)] = []
@@ -2293,50 +2350,56 @@ final class StatusController: NSObject, NSMenuDelegate {
             cpuUsage = perCoreUsage.reduce(0, +) / Double(max(perCoreUsage.count, 1))
         }
 
-        temperature = readTemperature()
+        // Throttle disk and temperature updates to once every ~4 seconds (every 10 ticks)
+        if systemStatsTickCount % 10 == 1 || disks.isEmpty {
+            temperature = readTemperature()
 
-        // Multiple disks — all local non-system volumes
-        disks.removeAll()
-        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsLocalKey, .volumeIsRootFileSystemKey]
-        if let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys) {
-            for vol in volumes {
-                guard let vals = try? vol.resourceValues(forKeys: Set(keys)),
-                      let name = vals.volumeName,
-                      let isLocal = vals.volumeIsLocal, isLocal else { continue }
-                let path = vol.path
-                // exclude system/pseudo/snapshot volumes
-                guard !path.hasPrefix("/System/"),
-                      !path.hasPrefix("/private/"),
-                      !path.contains("/.timemachine/"),
-                      !name.lowercased().hasPrefix("backups of"),
-                      !name.contains("@snap-") else { continue }
-                guard let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path) else { continue }
-                let free  = (attrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
-                let total = (attrs[FileAttributeKey.systemSize]     as? UInt64) ?? 0
-                // skip pseudo/tiny volumes (< 1 GB)
-                guard total >= 1_073_741_824 else { continue }
-                let isInternal = (path == "/" || (vals.volumeIsRootFileSystem == true))
-                let type = diskType(forPath: path)
-                disks.append((name, free, total, isInternal, type))
+            // Multiple disks — all local non-system volumes
+            var updatedDisks: [(name: String, free: UInt64, total: UInt64, isInternal: Bool, type: String)] = []
+            let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsLocalKey, .volumeIsRootFileSystemKey]
+            if let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys) {
+                for vol in volumes {
+                    guard let vals = try? vol.resourceValues(forKeys: Set(keys)),
+                          let name = vals.volumeName,
+                          let isLocal = vals.volumeIsLocal, isLocal else { continue }
+                    let path = vol.path
+                    // exclude system/pseudo/snapshot volumes
+                    guard !path.hasPrefix("/System/"),
+                          !path.hasPrefix("/private/"),
+                          !path.contains("/.timemachine/"),
+                          !name.lowercased().hasPrefix("backups of"),
+                          !name.contains("@snap-") else { continue }
+                    guard let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path) else { continue }
+                    let free  = (attrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
+                    let total = (attrs[FileAttributeKey.systemSize]     as? UInt64) ?? 0
+                    // skip pseudo/tiny volumes (< 1 GB)
+                    guard total >= 1_073_741_824 else { continue }
+                    let isInternal = (path == "/" || (vals.volumeIsRootFileSystem == true))
+                    let type = diskType(forPath: path)
+                    updatedDisks.append((name, free, total, isInternal, type))
+                }
             }
+            // always have / as fallback
+            if updatedDisks.isEmpty, let rootAttrs = try? FileManager.default.attributesOfFileSystem(forPath: "/") {
+                let rootFree  = (rootAttrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
+                let rootTotal = (rootAttrs[FileAttributeKey.systemSize]     as? UInt64) ?? 0
+                updatedDisks.append(("/", rootFree, rootTotal, true, "SSD"))
+            }
+            disks = updatedDisks
+            diskFree  = disks.first?.free  ?? 0
+            diskTotal = disks.first?.total ?? 0
         }
-        // always have / as fallback
-        if disks.isEmpty, let rootAttrs = try? FileManager.default.attributesOfFileSystem(forPath: "/") {
-            let rootFree  = (rootAttrs[FileAttributeKey.systemFreeSize] as? UInt64) ?? 0
-            let rootTotal = (rootAttrs[FileAttributeKey.systemSize]     as? UInt64) ?? 0
-            disks.append(("/", rootFree, rootTotal, true, "SSD"))
-        }
-        diskFree  = disks.first?.free  ?? 0
-        diskTotal = disks.first?.total ?? 0
     }
 
     func tick() {
-        reloadConfigIfNeeded()
-        checkLifecycle()
-        reloadSessions()
-        evaluate()
-        updateSystemStats()
-        if menuIsOpen { refreshOpenMenuRows() }
+        autoreleasepool {
+            reloadConfigIfNeeded()
+            checkLifecycle()
+            reloadSessions()
+            evaluate()
+            updateSystemStats()
+            if menuIsOpen { refreshOpenMenuRows() }
+        }
     }
 
     func stateFileNames() -> [String] {
@@ -2520,13 +2583,15 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func animStep() {
-        frameIdx = (frameIdx + 1) % frameCount
-        if forcePulse {
-            statusItem.button?.image = pulseIcon(frame: frameIdx, color: activeColor)
-        } else {
-            statusItem.button?.image = iconImage(color: activeColor, frame: frameIdx)
+        autoreleasepool {
+            frameIdx = (frameIdx + 1) % frameCount
+            if forcePulse {
+                statusItem.button?.image = pulseIcon(frame: frameIdx, color: activeColor)
+            } else {
+                statusItem.button?.image = iconImage(color: activeColor, frame: frameIdx)
+            }
+            applyTitle()
         }
-        applyTitle()
     }
 
     func applyTitle() {
