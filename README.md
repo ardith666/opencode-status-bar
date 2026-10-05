@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-12%2B-brightgreen" alt="macOS 12+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT">
-  <img src="https://img.shields.io/badge/version-1.1.3-orange" alt="Version 1.1.3">
+  <img src="https://img.shields.io/badge/version-1.1.4-orange" alt="Version 1.1.4">
   <img src="https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-lightgrey" alt="Universal Binary">
   <img src="https://img.shields.io/badge/Swift-5-orange" alt="Swift 5">
   <img src="https://img.shields.io/badge/Bun-Typescript-14151a" alt="Bun">
@@ -160,6 +160,12 @@ App not showing? Plugin not installed?
 ---
 
 ## 📋 Changelog
+
+### v1.1.4
+- **Fix memory leak**: properly deallocate Mach CPU info virtual memory (`vm_deallocate`) and host port rights (`mach_port_deallocate`)
+- **Fix IOKit leak**: properly release parent registry entries during NVMe / disk discovery
+- **Hardware polling throttling**: throttle disk and SMC temperature checks to ~4s intervals and cache disk types
+- **UI & Autorelease optimization**: wrap timer callbacks in `autoreleasepool`, cache rotated spinner frames, pill badge images, and UI config
 
 ### v1.1.3
 - **Permission pulse**: waiting permission state animates with pulse icon, honoring permission color
